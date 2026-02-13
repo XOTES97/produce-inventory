@@ -197,6 +197,21 @@ async function loadMasterData() {
 function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
   const app = h("div", { class: "app" });
 
+  function blurActiveElement() {
+    try {
+      const el = document.activeElement;
+      if (el && typeof el.blur === "function") el.blur();
+    } catch {
+      // ignore
+    }
+  }
+
+  function cleanupStuckBackdrops() {
+    // Defensive: if a modal backdrop gets "stuck" (rare on mobile after navigation),
+    // it will block taps on the bottom nav. Remove any leftovers.
+    for (const el of document.querySelectorAll(".modal-backdrop")) el.remove();
+  }
+
   const topbar = h("div", { class: "topbar" }, [
     h("div", { class: "topbar-inner" }, [
       h("div", { class: "brand" }, [
@@ -229,6 +244,15 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
               class: "navbtn",
               href: `#/${it.route}`,
               "aria-current": it.route === r ? "page" : null,
+              // Mobile reliability: blur any focused input (closes keyboard) so taps
+              // on the nav always navigate on the first try.
+              onpointerdown: () => blurActiveElement(),
+              onclick: (e) => {
+                e.preventDefault();
+                blurActiveElement();
+                cleanupStuckBackdrops();
+                navTo(it.route);
+              },
             },
             [h("div", { class: "icon", text: it.icon }), h("div", { class: "label", text: it.label })]
           )

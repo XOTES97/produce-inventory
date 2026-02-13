@@ -519,9 +519,10 @@ begin
   end if;
 
   -- Delete children first to avoid any ON DELETE CASCADE + RLS edge cases.
-  delete from public.movement_lines ml where ml.movement_id = v_movement_id;
-  delete from public.movement_attachments ma where ma.movement_id = v_movement_id;
-  delete from public.movements m where m.id = v_movement_id;
+  -- Use dynamic SQL to avoid PL/pgSQL variable/column name ambiguity with RLS policies.
+  execute 'delete from public.movement_lines ml where ml.movement_id = $1' using v_movement_id;
+  execute 'delete from public.movement_attachments ma where ma.movement_id = $1' using v_movement_id;
+  execute 'delete from public.movements m where m.id = $1' using v_movement_id;
 end;
 $$;
 
