@@ -461,27 +461,30 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
     row.querySelectorAll(".grid3").forEach((el) => (el.style.display = nextMode === "venta" ? "" : "none"));
     row.querySelectorAll(".right").forEach((el) => (el.style.display = nextMode === "venta" ? "" : "none"));
 
-    // Hide quality selector for traspasos (direction comes from movement-level fields).
-    if (nextMode === "traspaso_calidad") {
-      skuSel.value = "";
-      skuSel.closest("div").style.display = "none";
-      qualitySel.value = "";
-      qualitySel.closest("div").style.display = "none";
-      productSel.disabled = false;
-      qualitySel.disabled = false;
-    } else if (nextMode === "traspaso_sku") {
-      // Direction comes from movement-level from/to SKU.
-      skuSel.value = "";
-      skuSel.closest("div").style.display = "none";
-      qualitySel.closest("div").style.display = "";
-      productSel.disabled = true;
-      qualitySel.disabled = true;
-    } else {
-      skuSel.closest("div").style.display = "";
-      qualitySel.closest("div").style.display = "";
-      productSel.disabled = false;
-      qualitySel.disabled = false;
-    }
+	    // Hide quality selector for traspasos (direction comes from movement-level fields).
+	    if (nextMode === "traspaso_calidad") {
+	      skuSel.value = "";
+	      skuSel.closest("div").style.display = "none";
+	      productSel.closest("div").style.display = "";
+	      qualitySel.value = "";
+	      qualitySel.closest("div").style.display = "none";
+	      productSel.disabled = false;
+	      qualitySel.disabled = false;
+	    } else if (nextMode === "traspaso_sku") {
+	      // Direction comes from movement-level from/to SKU.
+	      skuSel.value = "";
+	      skuSel.closest("div").style.display = "none";
+	      productSel.closest("div").style.display = "none";
+	      qualitySel.closest("div").style.display = "none";
+	      productSel.disabled = true;
+	      qualitySel.disabled = true;
+	    } else {
+	      skuSel.closest("div").style.display = "";
+	      productSel.closest("div").style.display = "";
+	      qualitySel.closest("div").style.display = "";
+	      productSel.disabled = false;
+	      qualitySel.disabled = false;
+	    }
     if (nextMode !== "venta") {
       priceModel.value = "";
       boxes.value = "";
@@ -584,18 +587,34 @@ async function pageCapture() {
   const linesWrap = h("div", { class: "col" });
   const lineRows = [];
 
-  function applyTraspasoSkuBucket() {
-    if (currentMode !== "traspaso_sku") return;
-    const id = String(fromSku.value || "");
-    const s = id ? skuById(id) : null;
-    if (!s) return;
-    for (const row of lineRows) row.setProductQuality(s.product_id, s.quality_id, { lock: true });
-  }
+	  function applyTraspasoSkuBucket() {
+	    if (currentMode !== "traspaso_sku") return;
+	    const id = String(fromSku.value || "");
+	    const s = id ? skuById(id) : null;
+	    if (!s) return;
+	    for (const row of lineRows) row.setProductQuality(s.product_id, s.quality_id, { lock: true });
+	  }
 
-  function addLine() {
-    const row = buildLineRow({
-      products,
-      qualities,
+	  const traspasoSkuMeta = h("div", { class: "muted" });
+	  function updateTraspasoSkuMeta() {
+	    if (currentMode !== "traspaso_sku") return;
+	    const fromId = String(fromSku.value || "");
+	    const toId = String(toSku.value || "");
+	    const f = fromId ? skuById(fromId) : null;
+	    const t = toId ? skuById(toId) : null;
+	    if (!f && !t) {
+	      traspasoSkuMeta.textContent = "";
+	      return;
+	    }
+	    const left = f ? `${skuLabel(f.id)} (${productName(f.product_id)} | ${qualityName(f.quality_id)})` : "(elige De SKU)";
+	    const right = t ? `${skuLabel(t.id)} (${productName(t.product_id)} | ${qualityName(t.quality_id)})` : "(elige A SKU)";
+	    traspasoSkuMeta.textContent = `Movimiento: ${left} -> ${right}`;
+	  }
+
+	  function addLine() {
+	    const row = buildLineRow({
+	      products,
+	      qualities,
       skus,
       mode: currentMode,
       onRemove: () => {
@@ -616,11 +635,12 @@ async function pageCapture() {
     for (const row of lineRows) row.setMode(mt);
 
     traspasoSection.style.display = mt === "traspaso_calidad" ? "" : "none";
-    traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
-    ajusteSection.style.display = mt === "ajuste" ? "" : "none";
-    currencySection.style.display = mt === "venta" ? "" : "none";
-    applyTraspasoSkuBucket();
-  }
+	    traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
+	    ajusteSection.style.display = mt === "ajuste" ? "" : "none";
+	    currencySection.style.display = mt === "venta" ? "" : "none";
+	    applyTraspasoSkuBucket();
+	    updateTraspasoSkuMeta();
+	  }
 
   addLine();
 
@@ -631,10 +651,11 @@ async function pageCapture() {
     field("A calidad", toQuality),
   ]);
 
-  const traspasoSkuSection = h("div", { class: "col" }, [
-    h("div", { class: "grid2" }, [field("De SKU", fromSku), field("A SKU", toSku)]),
-    h("div", { class: "muted", text: "Regla Rancho (104): solo puede recibir de 102/103, y nunca puede ser origen." }),
-  ]);
+	  const traspasoSkuSection = h("div", { class: "col" }, [
+	    h("div", { class: "grid2" }, [field("De SKU", fromSku), field("A SKU", toSku)]),
+	    h("div", { class: "muted", text: "Regla Rancho (104): solo puede recibir de 102/103, y nunca puede ser origen." }),
+	    traspasoSkuMeta,
+	  ]);
 
   const ajusteSection = h("div", {}, [field("Direccion de ajuste", adjustDir)]);
 
@@ -644,7 +665,9 @@ async function pageCapture() {
   traspasoSkuSection.style.display = "none";
   ajusteSection.style.display = "none";
 
-  fromSku.addEventListener("change", () => applyTraspasoSkuBucket());
+	  fromSku.addEventListener("change", () => applyTraspasoSkuBucket());
+	  fromSku.addEventListener("change", () => updateTraspasoSkuMeta());
+	  toSku.addEventListener("change", () => updateTraspasoSkuMeta());
 
 	  const submitBtn = h(
 	    "button",
@@ -683,10 +706,6 @@ async function pageCapture() {
 	            msg.appendChild(notice("error", "SKU 104 no puede ser origen."));
 	            return;
 	          }
-	          if (fromSkuObj.product_id !== toSkuObj.product_id || fromSkuObj.quality_id !== toSkuObj.quality_id) {
-	            msg.appendChild(notice("error", "Traspaso SKU requiere que ambos SKUs compartan el mismo (Producto + Calidad)."));
-	            return;
-	          }
 	          if (Number(toSkuObj.code) === 104 && ![102, 103].includes(Number(fromSkuObj.code))) {
 	            msg.appendChild(notice("error", "Rancho (104) solo puede recibir de 102/103."));
 	            return;
@@ -698,14 +717,14 @@ async function pageCapture() {
 	          const product_id = ln.product_id;
 	          const quality_id = ln.quality_id;
           const w = Number(ln.weight_kg);
-          if (!product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
-          if (currentMode !== "traspaso_calidad" && !quality_id)
-            return msg.appendChild(notice("error", `Linea ${i + 1}: elige una calidad.`));
-          if (!Number.isFinite(w) || w <= 0) return msg.appendChild(notice("error", `Linea ${i + 1}: kg invalido.`));
+	          if (currentMode !== "traspaso_sku" && !product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
+	          if (currentMode !== "traspaso_calidad" && currentMode !== "traspaso_sku" && !quality_id)
+	            return msg.appendChild(notice("error", `Linea ${i + 1}: elige una calidad.`));
+	          if (!Number.isFinite(w) || w <= 0) return msg.appendChild(notice("error", `Linea ${i + 1}: kg invalido.`));
 
-          const row = { sku_id: sku_id || null, product_id, weight_kg: w };
+	          const row = { sku_id: sku_id || null, product_id: product_id || null, weight_kg: w };
 
-          if (currentMode !== "traspaso_calidad") row.quality_id = quality_id;
+	          if (currentMode !== "traspaso_calidad") row.quality_id = quality_id || null;
 
           if (currentMode === "venta") {
             const pm = ln.price_model;
@@ -743,14 +762,7 @@ async function pageCapture() {
           }
 	        }
 
-	        if (currentMode === "traspaso_sku") {
-	          for (const [i, ln] of parsed.entries()) {
-	            if (ln.product_id !== fromSkuObj.product_id || ln.quality_id !== fromSkuObj.quality_id) {
-	              msg.appendChild(notice("error", `Linea ${i + 1}: el producto/calidad debe coincidir con el SKU origen.`));
-	              return;
-            }
-          }
-        }
+	        // Traspaso SKU line buckets are derived from De/A SKU, so line rows only need kg.
 
         if (currentMode === "traspaso_calidad") {
           if (!fromQuality.value || !toQuality.value) {
@@ -879,8 +891,8 @@ async function pageCapture() {
 	            } else if (currentMode === "traspaso_sku") {
 	              lines.push({
 	                sku_id: fromSkuObj.id,
-	                product_id: ln.product_id,
-	                quality_id: ln.quality_id,
+	                product_id: fromSkuObj.product_id,
+	                quality_id: fromSkuObj.quality_id,
 	                delta_weight_kg: -ln.weight_kg,
 	                boxes: null,
 	                price_model: null,
@@ -889,8 +901,8 @@ async function pageCapture() {
 	              });
 	              lines.push({
 	                sku_id: toSkuObj.id,
-	                product_id: ln.product_id,
-	                quality_id: ln.quality_id,
+	                product_id: toSkuObj.product_id,
+	                quality_id: toSkuObj.quality_id,
 	                delta_weight_kg: ln.weight_kg,
 	                boxes: null,
 	                price_model: null,
@@ -1062,10 +1074,10 @@ async function pageMovements() {
   await load();
 }
 
-async function openMovementModal(m) {
-  const backdrop = h("div", { class: "modal-backdrop" });
-  const modal = h("div", { class: "modal col" });
-  backdrop.appendChild(modal);
+	async function openMovementModal(m) {
+	  const backdrop = h("div", { class: "modal-backdrop" });
+	  const modal = h("div", { class: "modal col" });
+	  backdrop.appendChild(modal);
 
   function close() {
     backdrop.remove();
@@ -1074,14 +1086,40 @@ async function openMovementModal(m) {
     if (e.target === backdrop) close();
   });
 
-  const header = h("div", { class: "row-wrap" }, [
-    h("div", { class: "col", style: "gap: 4px" }, [
-      h("div", { style: "font-weight: 820; font-size: 16px", text: movementLabel(m.movement_type) }),
-      h("div", { class: "muted", text: formatOccurredAt(m.occurred_at) }),
-    ]),
-    h("div", { class: "spacer" }),
-    h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]),
-  ]);
+	  const header = h("div", { class: "row-wrap" }, [
+	    h("div", { class: "col", style: "gap: 4px" }, [
+	      h("div", { style: "font-weight: 820; font-size: 16px", text: movementLabel(m.movement_type) }),
+	      h("div", { class: "muted", text: formatOccurredAt(m.occurred_at) }),
+	    ]),
+	    h("div", { class: "spacer" }),
+	    h(
+	      "button",
+	      {
+	        class: "btn btn-danger",
+	        type: "button",
+	        onclick: async () => {
+	          if (!confirm("Eliminar este movimiento? Esto ajustara el inventario y borrara la evidencia (si existe).")) return;
+	          const attachments = m.movement_attachments || [];
+	          const paths = attachments.map((a) => a.storage_path).filter(Boolean);
+	          const { error: delErr } = await supabase.rpc("delete_movement", { movement_id: m.id });
+	          if (delErr) return alert(delErr.message);
+
+	          // Best-effort Storage cleanup (does not affect inventory).
+	          if (paths.length > 0) {
+	            try {
+	              await supabase.storage.from("movement-proofs").remove(paths);
+	            } catch {
+	              // ignore
+	            }
+	          }
+	          close();
+	          await render();
+	        },
+	      },
+	      ["Eliminar"]
+	    ),
+	    h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]),
+	  ]);
 
 	  const info = h("div", { class: "notice" }, [
 	    h("div", { class: "row-wrap" }, [

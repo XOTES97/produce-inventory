@@ -321,10 +321,6 @@ begin
       raise exception 'to_sku_invalid';
     end if;
 
-    if v_from_product_id <> v_to_product_id or v_from_quality_id <> v_to_quality_id then
-      raise exception 'sku_bucket_mismatch';
-    end if;
-
     -- SKU 104 (Rancho) rule: can only receive inventory from 102/103 and can never be a source.
     if v_from_sku_code = 104 then
       raise exception 'rancho_cannot_be_source';
@@ -346,12 +342,24 @@ begin
     if exists (
       select 1
       from jsonb_array_elements(lines) as l
-      where (l->>'product_id')::uuid <> v_from_product_id
-         or (l->>'quality_id')::uuid <> v_from_quality_id
-         or (
-           nullif(l->>'sku_id', '')::uuid is distinct from v_from_sku_id
-           and nullif(l->>'sku_id', '')::uuid is distinct from v_to_sku_id
-         )
+      where (
+        nullif(l->>'sku_id', '')::uuid is distinct from v_from_sku_id
+        and nullif(l->>'sku_id', '')::uuid is distinct from v_to_sku_id
+      )
+      or (
+        nullif(l->>'sku_id', '')::uuid = v_from_sku_id
+        and (
+          (l->>'product_id')::uuid <> v_from_product_id
+          or (l->>'quality_id')::uuid <> v_from_quality_id
+        )
+      )
+      or (
+        nullif(l->>'sku_id', '')::uuid = v_to_sku_id
+        and (
+          (l->>'product_id')::uuid <> v_to_product_id
+          or (l->>'quality_id')::uuid <> v_to_quality_id
+        )
+      )
     ) then
       raise exception 'traspaso_sku_lines_invalid';
     end if;
@@ -486,6 +494,34 @@ $$;
 
 revoke all on function public.create_movement_with_lines(jsonb, jsonb, jsonb) from public;
 grant execute on function public.create_movement_with_lines(jsonb, jsonb, jsonb) to authenticated;
+
+-- Delete/cancel a movement (manager-only usage; still enforced by RLS owner_id).
+-- Note: Storage objects must be deleted separately via the client (we return no paths here).
+create or replace function public.delete_movement(movement_id uuid)
+returns void
+language plpgsql
+security invoker
+as $$
+begin
+  if movement_id is null then
+    raise exception 'movement_id_required';
+  end if;
+
+  if not exists (
+    select 1 from public.movements m where m.id = movement_id and m.owner_id = auth.uid()
+  ) then
+    raise exception 'movement_not_found';
+  end if;
+
+  -- Delete children first to avoid any ON DELETE CASCADE + RLS edge cases.
+  delete from public.movement_lines ml where ml.movement_id = movement_id;
+  delete from public.movement_attachments ma where ma.movement_id = movement_id;
+  delete from public.movements m where m.id = movement_id;
+end;
+$$;
+
+revoke all on function public.delete_movement(uuid) from public;
+grant execute on function public.delete_movement(uuid) to authenticated;
 
 -- One-time bootstrap to create your base products/qualities + starter SKUs.
 create or replace function public.bootstrap_defaults()
@@ -684,6 +720,12 @@ on public.movements for insert
 to authenticated
 with check (owner_id = auth.uid());
 
+drop policy if exists movements_delete_own on public.movements;
+create policy movements_delete_own
+on public.movements for delete
+to authenticated
+using (owner_id = auth.uid());
+
 -- movement_lines: select + insert only; must belong to a movement owned by the user
 drop policy if exists movement_lines_select_own on public.movement_lines;
 create policy movement_lines_select_own
@@ -765,6 +807,19 @@ with check (
   )
 );
 
+drop policy if exists movement_lines_delete_own on public.movement_lines;
+create policy movement_lines_delete_own
+on public.movement_lines for delete
+to authenticated
+using (
+  exists (
+    select 1
+    from public.movements m
+    where m.id = movement_id
+      and m.owner_id = auth.uid()
+  )
+);
+
 -- movement_attachments: select + insert only
 drop policy if exists movement_attachments_select_own on public.movement_attachments;
 create policy movement_attachments_select_own
@@ -785,6 +840,12 @@ with check (
       and m.owner_id = auth.uid()
   )
 );
+
+drop policy if exists movement_attachments_delete_own on public.movement_attachments;
+create policy movement_attachments_delete_own
+on public.movement_attachments for delete
+to authenticated
+using (owner_id = auth.uid());
 
 -- Supabase Storage bucket + policies for proof uploads
 insert into storage.buckets (id, name, public)
@@ -827,7 +888,7 @@ grant select, insert, update on table public.products to authenticated;
 grant select, insert, update on table public.qualities to authenticated;
 grant select, insert, update on table public.employees to authenticated;
 grant select, insert, update on table public.skus to authenticated;
-grant select, insert on table public.movements to authenticated;
-grant select, insert on table public.movement_lines to authenticated;
-grant select, insert on table public.movement_attachments to authenticated;
+grant select, insert, delete on table public.movements to authenticated;
+grant select, insert, delete on table public.movement_lines to authenticated;
+grant select, insert, delete on table public.movement_attachments to authenticated;
 grant select on table public.inventory_on_hand to authenticated;

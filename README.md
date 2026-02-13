@@ -10,9 +10,10 @@ The system is based on a **movement ledger** (kardex): you never "edit stock". Y
   - `per_kg` (price per kg)
   - `per_box` (fixed price per box, variable kg; store both boxes + kg)
 - `Merma` (waste/decomposition, -kg)
-- `Traspaso SKU` (presentation transfer within the same base inventory bucket; net 0kg)
+- `Traspaso SKU` (move kg from one SKU to another; net 0kg)
 - `Traspaso de Calidad` (quality transfer, -kg from one quality, +kg to another quality)
 - `Ajuste` (manual correction, +/-kg)
+- Delete/cancel movements (for mistakes/testing)
 
 ## Architecture
 - Database: Supabase Postgres (tables + RLS policies)
