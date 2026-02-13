@@ -1,4 +1,5 @@
-const CACHE_NAME = "produce-inventory-pwa-v1";
+// Network-first so app updates deploy cleanly (offline support is best-effort).
+const CACHE_NAME = "produce-inventory-pwa-v2";
 const PRECACHE = [
   "./",
   "./index.html",
@@ -33,15 +34,16 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
 
+  const isNav = event.request.mode === "navigate";
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((resp) => {
+    fetch(event.request)
+      .then((resp) => {
         const copy = resp.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return resp;
-      });
-    })
+      })
+      .catch(() =>
+        caches.match(event.request).then((cached) => cached || (isNav ? caches.match("./index.html") : null))
+      )
   );
 });
-
