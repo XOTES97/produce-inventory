@@ -677,7 +677,6 @@ async function pageCapture() {
 
 	  const traspasoSkuSection = h("div", { class: "col" }, [
 	    h("div", { class: "grid2" }, [field("De SKU", fromSku), field("A SKU", toSku)]),
-	    h("div", { class: "muted", text: "Regla Rancho (104): solo puede recibir de 102/103, y nunca puede ser origen." }),
 	    traspasoSkuMeta,
 	  ]);
 
@@ -726,14 +725,6 @@ async function pageCapture() {
 	            msg.appendChild(notice("error", "De SKU y A SKU deben ser diferentes."));
 	            return;
 	          }
-	          if (Number(fromSkuObj.code) === 104) {
-	            msg.appendChild(notice("error", "SKU 104 no puede ser origen."));
-	            return;
-	          }
-	          if (Number(toSkuObj.code) === 104 && ![102, 103].includes(Number(fromSkuObj.code))) {
-	            msg.appendChild(notice("error", "Rancho (104) solo puede recibir de 102/103."));
-	            return;
-	          }
 	        }
 
 	        for (const [i, ln] of rawLines.entries()) {
@@ -774,17 +765,6 @@ async function pageCapture() {
 
           parsed.push(row);
         }
-
-        if (currentMode !== "venta" && currentMode !== "traspaso_sku") {
-          for (const [i, ln] of parsed.entries()) {
-            if (!ln.sku_id) continue;
-            const s = skuById(ln.sku_id);
-            if (s && Number(s.code) === 104) {
-              msg.appendChild(notice("error", `Linea ${i + 1}: SKU 104 solo se permite en Ventas o Traspaso SKU.`));
-              return;
-            }
-          }
-	        }
 
 	        // Traspaso SKU line buckets are derived from De/A SKU, so line rows only need kg.
 
@@ -980,7 +960,7 @@ async function pageCapture() {
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: "Nuevo movimiento" }),
       h("div", { class: "muted", text: "Todo se registra en kg. Evidencia (WhatsApp) opcional." }),
-      h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). El SKU solo etiqueta la presentacion (por ejemplo, 103/104 descuentan kg de la misma base que 102)." }),
+      h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
       msg,
       pills.el,
       h("div", { class: "divider" }),
@@ -1245,6 +1225,41 @@ async function pageMovements() {
 
 async function pageInventory() {
   const msg = h("div");
+  let viewMode = "sku"; // "sku" | "product"
+  let invMap = new Map(); // key: `${productId}|${qualityId}` -> kg
+
+  function bucketKey(productId, qualityId) {
+    return `${String(productId)}|${String(qualityId)}`;
+  }
+
+  function choosePrimarySku(list) {
+    const sk = (list || []).filter(Boolean);
+    if (sk.length === 0) return null;
+    const perKg = sk.filter((s) => String(s.default_price_model || "") === "per_kg");
+    const candidates = (perKg.length ? perKg : sk).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+    return candidates[0] || sk[0] || null;
+  }
+
+  function setView(next) {
+    viewMode = next;
+    btnSku.setAttribute("aria-pressed", viewMode === "sku" ? "true" : "false");
+    btnProd.setAttribute("aria-pressed", viewMode === "product" ? "true" : "false");
+    renderTable();
+  }
+
+  const btnSku = h(
+    "button",
+    { class: "pill", type: "button", "aria-pressed": "true", onclick: () => setView("sku") },
+    ["Por SKU"]
+  );
+  const btnProd = h(
+    "button",
+    { class: "pill", type: "button", "aria-pressed": "false", onclick: () => setView("product") },
+    ["Por producto"]
+  );
+
+  const viewPills = h("div", { class: "pillbar" }, [btnSku, btnProd]);
+
   const card = h("div", { class: "card col" }, [
     h("div", { class: "row-wrap" }, [
       h("div", { class: "h1", text: "Inventario (kg)" }),
@@ -1259,6 +1274,7 @@ async function pageInventory() {
         ["Actualizar"]
       ),
     ]),
+    viewPills,
     msg,
   ]);
 
@@ -1267,24 +1283,84 @@ async function pageInventory() {
   const page = h("div", { class: "col" }, [card, tableWrap]);
   layout(ROUTE_TITLES.inventory, page);
 
-  async function load() {
-    msg.replaceChildren(notice("warn", "Cargando..."));
-    const { data, error } = await supabase.from("inventory_on_hand").select("product_id,product_name,quality_id,quality_name,on_hand_kg");
-    if (error) {
-      msg.replaceChildren(notice("error", error.message));
-      return;
-    }
-    msg.replaceChildren();
+  function renderSkuView() {
+    const skus = (state.skus || []).filter((s) => s.is_active).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
 
+    // Group SKUs by shared inventory bucket (product+quality).
+    const groups = new Map(); // key -> { product_id, quality_id, skus: [] }
+    for (const s of skus) {
+      const key = bucketKey(s.product_id, s.quality_id);
+      if (!groups.has(key)) groups.set(key, { key, product_id: s.product_id, quality_id: s.quality_id, skus: [] });
+      groups.get(key).skus.push(s);
+    }
+
+    // Also include any buckets present in the inventory view (even if no active SKU points to it).
+    for (const key of invMap.keys()) {
+      if (!groups.has(key)) {
+        const [pid, qid] = String(key).split("|");
+        groups.set(key, { key, product_id: pid, quality_id: qid, skus: [] });
+      }
+    }
+
+    const rows = Array.from(groups.values())
+      .map((g) => {
+        const skList = (g.skus || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+        const primary = choosePrimarySku(skList);
+        const linked = primary ? skList.filter((s) => s.id !== primary.id) : skList;
+        const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
+        const onHand = Number(invMap.get(g.key) || 0);
+        const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
+        const sortLabel = primary ? String(primary.name || "") : `${productName(g.product_id)} | ${qualityName(g.quality_id)}`;
+        return { ...g, codes, primary, linked, onHand, sortCode, sortLabel };
+      })
+      .sort((a, b) => (a.sortCode - b.sortCode) || String(a.sortLabel).localeCompare(String(b.sortLabel)));
+
+    const table = h("table", { class: "table" }, [
+      h("thead", {}, [
+        h("tr", {}, [
+          h("th", { text: "SKU(s)" }),
+          h("th", { text: "Descripcion" }),
+          h("th", { text: "Stock (kg)" }),
+        ]),
+      ]),
+      h(
+        "tbody",
+        {},
+        rows.map((r) => {
+          const desc = r.primary
+            ? [
+                h("div", { text: `${Number(r.primary.code)} ${String(r.primary.name)}` }),
+                r.linked && r.linked.length
+                  ? h("div", { class: "muted", text: `Vinculados: ${r.linked.map((s) => `${Number(s.code)} ${String(s.name)}`).join(", ")}` })
+                  : null,
+              ]
+            : [h("div", { class: "muted", text: `${productName(r.product_id)} | ${qualityName(r.quality_id)}` })];
+
+          return h("tr", {}, [
+            h("td", { class: "mono", text: r.codes || "" }),
+            h("td", {}, desc),
+            h("td", { class: "mono", text: fmtKg(r.onHand) }),
+          ]);
+        })
+      ),
+    ]);
+
+    tableWrap.replaceChildren(
+      h("div", { class: "h1", text: "Inventario por SKU" }),
+      h("div", { class: "muted", text: "Los SKUs vinculados comparten el mismo saldo (ej: KG + Caja)." }),
+      tableScroll(table)
+    );
+  }
+
+  function renderProductView() {
     const products = state.products.filter((p) => p.is_active).sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const qualities = state.qualities.filter((q) => q.is_active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
     const map = new Map(); // key: productId -> Map(qualityId -> kg)
-    for (const row of data || []) {
-      const pid = row.product_id;
-      const qid = row.quality_id;
+    for (const [k, v] of invMap.entries()) {
+      const [pid, qid] = String(k).split("|");
       if (!map.has(pid)) map.set(pid, new Map());
-      map.get(pid).set(qid, Number(row.on_hand_kg || 0));
+      map.get(pid).set(qid, Number(v || 0));
     }
 
     const thead = h("thead", {}, [
@@ -1311,9 +1387,32 @@ async function pageInventory() {
     );
 
     tableWrap.replaceChildren(
-      h("div", { class: "h1", text: "Inventario" }),
+      h("div", { class: "h1", text: "Inventario por producto" }),
       tableScroll(h("table", { class: "table" }, [thead, tbody]))
     );
+  }
+
+  function renderTable() {
+    if (viewMode === "product") return renderProductView();
+    return renderSkuView();
+  }
+
+  async function load() {
+    msg.replaceChildren(notice("warn", "Cargando..."));
+    const { data, error } = await supabase.from("inventory_on_hand").select("product_id,product_name,quality_id,quality_name,on_hand_kg");
+    if (error) {
+      msg.replaceChildren(notice("error", error.message));
+      return;
+    }
+    msg.replaceChildren();
+
+    invMap = new Map();
+    for (const row of data || []) {
+      const key = bucketKey(row.product_id, row.quality_id);
+      invMap.set(key, Number(row.on_hand_kg || 0));
+    }
+
+    renderTable();
   }
 
   await load();
@@ -1367,18 +1466,40 @@ async function pageReports() {
           return;
         }
 
-        const perProduct = new Map(); // productId -> stats
-        const perSku = new Map(); // skuId|null -> stats
+        function bucketKey(productId, qualityId) {
+          return `${String(productId)}|${String(qualityId)}`;
+        }
+
+        function choosePrimarySku(list) {
+          const sk = (list || []).filter(Boolean);
+          if (sk.length === 0) return null;
+          const perKg = sk.filter((s) => String(s.default_price_model || "") === "per_kg");
+          const candidates = (perKg.length ? perKg : sk).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+          return candidates[0] || sk[0] || null;
+        }
+
+        const bucketSkus = new Map(); // key -> sku[]
+        for (const s of state.skus || []) {
+          const key = bucketKey(s.product_id, s.quality_id);
+          if (!bucketSkus.has(key)) bucketSkus.set(key, []);
+          bucketSkus.get(key).push(s);
+        }
+        for (const list of bucketSkus.values()) list.sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+
+        const perBucket = new Map(); // bucketKey -> stats
+        const perSku = new Map(); // skuId|null -> sales stats
         const overall = { entradas: 0, ventas: 0, merma: 0, traspaso: 0, revenue: 0 };
 
         for (const m of data || []) {
           const lines = m.movement_lines || [];
           for (const l of lines) {
             const pid = l.product_id;
-            if (!perProduct.has(pid)) {
-              perProduct.set(pid, { product_id: pid, entradas: 0, ventas: 0, merma: 0, traspaso_in: 0, traspaso_out: 0, revenue: 0 });
+            const qid = l.quality_id;
+            const key = bucketKey(pid, qid);
+            if (!perBucket.has(key)) {
+              perBucket.set(key, { key, product_id: pid, quality_id: qid, entradas: 0, ventas: 0, merma: 0, revenue: 0, boxes: 0 });
             }
-            const st = perProduct.get(pid);
+            const st = perBucket.get(key);
 
             const skuId = l.sku_id || null;
             if (!perSku.has(skuId)) {
@@ -1401,12 +1522,11 @@ async function pageReports() {
               }
               skuSt.ventas += Math.max(0, -d);
               if (l.boxes != null) skuSt.boxes += Number(l.boxes || 0);
+              if (l.boxes != null) st.boxes += Number(l.boxes || 0);
             } else if (m.movement_type === "merma") {
               st.merma += Math.max(0, -d);
               overall.merma += Math.max(0, -d);
             } else if (m.movement_type === "traspaso_calidad" || m.movement_type === "traspaso_sku") {
-              if (d > 0) st.traspaso_in += d;
-              if (d < 0) st.traspaso_out += -d;
               // overall traspaso as moved kg (count positive deltas only)
               if (d > 0) overall.traspaso += d;
             } else if (m.movement_type === "ajuste") {
@@ -1414,6 +1534,9 @@ async function pageReports() {
             }
           }
         }
+
+        const overallMermaPctEntradas = overall.entradas > 0 ? (overall.merma / overall.entradas) * 100 : null;
+        const overallMermaPctVentas = overall.ventas > 0 ? (overall.merma / overall.ventas) * 100 : null;
 
         const summary = h("div", { class: "card col" }, [
           h("div", { class: "h1", text: "Resumen" }),
@@ -1423,38 +1546,71 @@ async function pageReports() {
             h("div", { class: "notice" }, [h("div", { class: "muted", text: "Merma (kg)" }), h("div", { class: "mono", text: fmtKg(overall.merma) })]),
             h("div", { class: "notice" }, [h("div", { class: "muted", text: "Traspaso (kg movidos)" }), h("div", { class: "mono", text: fmtKg(overall.traspaso) })]),
           ]),
+          h("div", { class: "grid2" }, [
+            h("div", { class: "notice" }, [
+              h("div", { class: "muted", text: "Merma % / Entradas" }),
+              h("div", { class: "mono", text: overallMermaPctEntradas != null ? `${overallMermaPctEntradas.toFixed(1)}%` : "" }),
+            ]),
+            h("div", { class: "notice" }, [
+              h("div", { class: "muted", text: "Merma % / Ventas" }),
+              h("div", { class: "mono", text: overallMermaPctVentas != null ? `${overallMermaPctVentas.toFixed(1)}%` : "" }),
+            ]),
+          ]),
           h("div", { class: "notice" }, [
             h("div", { class: "muted", text: "Ingresos (Ventas)" }),
             h("div", { class: "mono", text: fmtMoney(overall.revenue) }),
           ]),
         ]);
 
-        const rows = Array.from(perProduct.values()).sort((a, b) => productName(a.product_id).localeCompare(productName(b.product_id)));
-        const table = h("table", { class: "table" }, [
+        const bucketRows = Array.from(perBucket.values())
+          .filter((r) => r.entradas > 0 || r.ventas > 0 || r.merma > 0 || r.revenue > 0 || r.boxes > 0)
+          .map((r) => {
+            const skList = (bucketSkus.get(r.key) || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+            const primary = choosePrimarySku(skList);
+            const linked = primary ? skList.filter((s) => s.id !== primary.id) : skList;
+            const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
+            const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
+            const sortLabel = primary ? String(primary.name || "") : `${productName(r.product_id)} | ${qualityName(r.quality_id)}`;
+            return { ...r, skus: skList, primary, linked, codes, sortCode, sortLabel };
+          })
+          .sort((a, b) => (a.sortCode - b.sortCode) || String(a.sortLabel).localeCompare(String(b.sortLabel)));
+
+        const bucketTable = h("table", { class: "table" }, [
           h("thead", {}, [
             h("tr", {}, [
-              h("th", { text: "Producto" }),
+              h("th", { text: "SKU(s)" }),
               h("th", { text: "Entradas (kg)" }),
               h("th", { text: "Ventas (kg)" }),
               h("th", { text: "Merma (kg)" }),
               h("th", { text: "Merma % / Entradas" }),
               h("th", { text: "Merma % / Ventas" }),
+              h("th", { text: "Cajas" }),
               h("th", { text: "Ingresos" }),
             ]),
           ]),
           h(
             "tbody",
             {},
-            rows.map((r) => {
+            bucketRows.map((r) => {
               const mermaPctEntradas = r.entradas > 0 ? (r.merma / r.entradas) * 100 : null;
               const mermaPctVentas = r.ventas > 0 ? (r.merma / r.ventas) * 100 : null;
+              const skuCell = r.primary
+                ? [
+                    h("div", { class: "mono", text: r.codes || "" }),
+                    h("div", { text: `${Number(r.primary.code)} ${String(r.primary.name)}` }),
+                    r.linked && r.linked.length
+                      ? h("div", { class: "muted", text: `Vinculados: ${r.linked.map((s) => `${Number(s.code)} ${String(s.name)}`).join(", ")}` })
+                      : null,
+                  ]
+                : [h("div", { class: "muted", text: `${productName(r.product_id)} | ${qualityName(r.quality_id)}` })];
               return h("tr", {}, [
-                h("td", { text: productName(r.product_id) }),
+                h("td", {}, skuCell),
                 h("td", { class: "mono", text: fmtKg(r.entradas) }),
                 h("td", { class: "mono", text: fmtKg(r.ventas) }),
                 h("td", { class: "mono", text: fmtKg(r.merma) }),
                 h("td", { class: "mono", text: mermaPctEntradas != null ? `${mermaPctEntradas.toFixed(1)}%` : "" }),
                 h("td", { class: "mono", text: mermaPctVentas != null ? `${mermaPctVentas.toFixed(1)}%` : "" }),
+                h("td", { class: "mono", text: r.boxes ? String(r.boxes) : "" }),
                 h("td", { class: "mono", text: r.revenue ? fmtMoney(r.revenue) : "" }),
               ]);
             })
@@ -1497,10 +1653,14 @@ async function pageReports() {
 
         out.replaceChildren(
           summary,
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Por producto" }), tableScroll(table)]),
           h("div", { class: "card col" }, [
-            h("div", { class: "h1", text: "Ventas por SKU" }),
-            h("div", { class: "muted", text: "Esto separa, por ejemplo, Papaya 2da Caja (103) vs Rancho (104) aunque descuenten del mismo inventario base." }),
+            h("div", { class: "h1", text: "Por SKU (inventario)" }),
+            h("div", { class: "muted", text: "Agrupado por inventario (SKUs vinculados comparten el mismo saldo)." }),
+            tableScroll(bucketTable),
+          ]),
+          h("div", { class: "card col" }, [
+            h("div", { class: "h1", text: "Ventas por SKU (presentacion)" }),
+            h("div", { class: "muted", text: "Detalle de ventas por SKU capturado (ej: KG vs Caja)." }),
             tableScroll(skuTable),
           ])
         );

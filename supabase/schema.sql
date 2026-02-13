@@ -321,14 +321,6 @@ begin
       raise exception 'to_sku_invalid';
     end if;
 
-    -- SKU 104 (Rancho) rule: can only receive inventory from 102/103 and can never be a source.
-    if v_from_sku_code = 104 then
-      raise exception 'rancho_cannot_be_source';
-    end if;
-    if v_to_sku_code = 104 and v_from_sku_code not in (102, 103) then
-      raise exception 'rancho_source_invalid';
-    end if;
-
     select coalesce(sum((l->>'delta_weight_kg')::numeric), 0)
       into v_sum_delta
     from jsonb_array_elements(lines) as l;
@@ -545,6 +537,7 @@ declare
   v_pina uuid;
   v_q_1ra uuid;
   v_q_2da uuid;
+  v_q_rancho uuid;
   v_q_1ra_grande uuid;
   v_q_1ra_chica uuid;
 begin
@@ -557,6 +550,7 @@ begin
   values
     ('1ra', 10),
     ('2da', 20),
+    ('Rancho', 30),
     ('1ra Grande', 11),
     ('1ra Chica', 12)
   on conflict (owner_id, name) do nothing;
@@ -580,6 +574,7 @@ begin
 
   select id into v_q_1ra from public.qualities where owner_id = v_owner and name = '1ra';
   select id into v_q_2da from public.qualities where owner_id = v_owner and name = '2da';
+  select id into v_q_rancho from public.qualities where owner_id = v_owner and name = 'Rancho';
   select id into v_q_1ra_grande from public.qualities where owner_id = v_owner and name = '1ra Grande';
   select id into v_q_1ra_chica from public.qualities where owner_id = v_owner and name = '1ra Chica';
 
@@ -590,7 +585,7 @@ begin
     (101, 'Papaya 1ra Chica KG', v_papaya, v_q_1ra_chica, 'per_kg'),
     (102, 'Papaya 2da KG', v_papaya, v_q_2da, 'per_kg'),
     (103, 'Papaya 2da Caja', v_papaya, v_q_2da, 'per_box'),
-    (104, 'Rancho de Papaya Caja', v_papaya, v_q_2da, 'per_box'),
+    (104, 'Rancho de Papaya Caja', v_papaya, v_q_rancho, 'per_box'),
     (106, 'Papaya 1ra Chica Caja', v_papaya, v_q_1ra_chica, 'per_box'),
 
     (200, 'Sandia Sin Semilla 1ra KG', v_sandia_ss, v_q_1ra, 'per_kg'),
@@ -756,37 +751,6 @@ with check (
     from public.movements m
     where m.id = movement_id
       and m.owner_id = auth.uid()
-  )
-  and (
-    -- SKU 104 (Rancho) can only be used on Ventas or as the *destination* of a Traspaso SKU from 102/103.
-    sku_id is null
-    or not exists (
-      select 1
-      from public.skus s
-      where s.id = sku_id
-        and s.owner_id = auth.uid()
-        and s.code = 104
-    )
-    or exists (
-      select 1
-      from public.movements m
-      where m.id = movement_id
-        and m.owner_id = auth.uid()
-        and m.movement_type = 'venta'
-    )
-    or exists (
-      select 1
-      from public.movements m
-      join public.skus froms on froms.id = m.from_sku_id and froms.owner_id = auth.uid()
-      join public.skus tos on tos.id = m.to_sku_id and tos.owner_id = auth.uid()
-      where m.id = movement_id
-        and m.owner_id = auth.uid()
-        and m.movement_type = 'traspaso_sku'
-        and tos.id = sku_id
-        and tos.code = 104
-        and froms.code in (102, 103)
-        and delta_weight_kg > 0
-    )
   )
   and (
     sku_id is null
