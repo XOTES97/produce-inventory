@@ -502,21 +502,26 @@ returns void
 language plpgsql
 security invoker
 as $$
+declare
+  v_movement_id uuid;
 begin
-  if movement_id is null then
+  -- Avoid ambiguity between function args and table columns.
+  v_movement_id := movement_id;
+
+  if v_movement_id is null then
     raise exception 'movement_id_required';
   end if;
 
   if not exists (
-    select 1 from public.movements m where m.id = movement_id and m.owner_id = auth.uid()
+    select 1 from public.movements m where m.id = v_movement_id and m.owner_id = auth.uid()
   ) then
     raise exception 'movement_not_found';
   end if;
 
   -- Delete children first to avoid any ON DELETE CASCADE + RLS edge cases.
-  delete from public.movement_lines ml where ml.movement_id = movement_id;
-  delete from public.movement_attachments ma where ma.movement_id = movement_id;
-  delete from public.movements m where m.id = movement_id;
+  delete from public.movement_lines ml where ml.movement_id = v_movement_id;
+  delete from public.movement_attachments ma where ma.movement_id = v_movement_id;
+  delete from public.movements m where m.id = v_movement_id;
 end;
 $$;
 
