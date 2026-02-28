@@ -29,6 +29,11 @@ const state = {
   masterLoaded: false,
 };
 
+const STORAGE_KEYS = {
+  captureFixedDatetimeLock: "produce_inventory.capture.fixed_datetime_lock",
+  captureFixedDatetimeValue: "produce_inventory.capture.fixed_datetime_value",
+};
+
 function route() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
   const r = raw.split("?")[0].trim();
@@ -37,6 +42,23 @@ function route() {
 
 function navTo(r) {
   location.hash = `#/${r}`;
+}
+
+function storageGet(key, fallback = "") {
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? fallback : v;
+  } catch {
+    return fallback;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // ignore
+  }
 }
 
 function h(tag, attrs = {}, children = []) {
@@ -563,7 +585,14 @@ async function pageCapture() {
     return;
   }
 
-  const occurredAt = h("input", { type: "datetime-local", value: localNowInputValue() });
+  const fixedDtLockOn = storageGet(STORAGE_KEYS.captureFixedDatetimeLock, "0") === "1";
+  const fixedDtSaved = storageGet(STORAGE_KEYS.captureFixedDatetimeValue, "");
+  const occurredAt = h("input", {
+    type: "datetime-local",
+    value: fixedDtLockOn && fixedDtSaved ? fixedDtSaved : localNowInputValue(),
+  });
+  const lockOccurredAt = h("input", { type: "checkbox" });
+  lockOccurredAt.checked = fixedDtLockOn;
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
   const currency = h("input", { type: "text", value: DEFAULT_CURRENCY, placeholder: "Moneda (MXN)" });
   const reportedBy = h("select", {}, optionList(employees, { includeEmpty: true, emptyLabel: "(Opcional)..." }));
@@ -691,6 +720,16 @@ async function pageCapture() {
 	  fromSku.addEventListener("change", () => applyTraspasoSkuBucket());
 	  fromSku.addEventListener("change", () => updateTraspasoSkuMeta());
 	  toSku.addEventListener("change", () => updateTraspasoSkuMeta());
+  occurredAt.addEventListener("change", () => {
+    if (lockOccurredAt.checked) storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+  });
+  lockOccurredAt.addEventListener("change", () => {
+    storageSet(STORAGE_KEYS.captureFixedDatetimeLock, lockOccurredAt.checked ? "1" : "0");
+    if (lockOccurredAt.checked) {
+      if (!occurredAt.value) occurredAt.value = localNowInputValue();
+      storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    }
+  });
 
 	  const submitBtn = h(
 	    "button",
@@ -929,7 +968,11 @@ async function pageCapture() {
           // Reset most inputs (file inputs cannot be programmatically set reliably).
           notes.value = "";
           proofs.value = "";
-          occurredAt.value = localNowInputValue();
+          if (lockOccurredAt.checked) {
+            storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+          } else {
+            occurredAt.value = localNowInputValue();
+          }
 	          reportedBy.value = "";
 	          fromQuality.value = "";
 	          toQuality.value = "";
@@ -961,10 +1004,15 @@ async function pageCapture() {
       h("div", { class: "h1", text: "Nuevo movimiento" }),
       h("div", { class: "muted", text: "Todo se registra en kg. Evidencia (WhatsApp) opcional." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
-      msg,
-      pills.el,
-      h("div", { class: "divider" }),
+	      msg,
+	      pills.el,
+	      h("div", { class: "divider" }),
 	      h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), field("Empleado", reportedBy)]),
+      h(
+        "label",
+        { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
+        [lockOccurredAt, h("span", { text: "Mantener fecha/hora fija despues de guardar." })]
+      ),
 	      field("Notas", notes),
 	      currencySection,
 	      traspasoSection,
@@ -1061,6 +1109,27 @@ async function pageMovements() {
           btnView,
         ]),
         m.notes ? h("div", { class: "muted", text: m.notes }) : null,
+        lines.length
+          ? h("div", { class: "movement-lines-preview col" }, [
+              ...lines.map((l) => {
+                const skuText =
+                  skuLabel(l.sku_id) ||
+                  `${productName(l.product_id)} | ${qualityName(l.quality_id)}`;
+                const d = Number(l.delta_weight_kg || 0);
+                const kg = `${d >= 0 ? "+" : "-"}${fmtKg(Math.abs(d))} kg`;
+                const pieces = [kg];
+                if (l.boxes != null) pieces.push(`${Number(l.boxes || 0)} cajas`);
+                if (m.movement_type === "venta" && l.line_total != null) {
+                  pieces.push(fmtMoney(Number(l.line_total || 0), m.currency || DEFAULT_CURRENCY));
+                }
+                return h("div", { class: "movement-line-item" }, [
+                  h("div", { class: "mono movement-line-sku", text: skuText }),
+                  h("div", { class: "spacer" }),
+                  h("div", { class: "mono movement-line-qty", text: pieces.join(" | ") }),
+                ]);
+              }),
+            ])
+          : null,
       ]);
       listWrap.appendChild(card);
     }
@@ -1090,7 +1159,7 @@ async function pageMovements() {
     if (e.target === backdrop) close();
   });
 
-	  const header = h("div", { class: "row-wrap" }, [
+	  const header = h("div", { class: "row-wrap modal-header" }, [
 	    h("div", { class: "col", style: "gap: 4px" }, [
 	      h("div", { style: "font-weight: 820; font-size: 16px", text: movementLabel(m.movement_type) }),
 	      h("div", { class: "muted", text: formatOccurredAt(m.occurred_at) }),
@@ -1219,6 +1288,13 @@ async function pageMovements() {
   modal.appendChild(h("div", { class: "divider" }));
   modal.appendChild(h("div", { class: "h1", text: "Evidencia" }));
   modal.appendChild(proofsWrap);
+  modal.appendChild(h("div", { class: "divider" }));
+  modal.appendChild(
+    h("div", { class: "row-wrap" }, [
+      h("div", { class: "spacer" }),
+      h("button", { class: "btn", type: "button", onclick: close }, ["Cerrar"]),
+    ])
+  );
 
   document.body.appendChild(backdrop);
 }
