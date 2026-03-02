@@ -1848,6 +1848,9 @@ async function pageCutoffs() {
   let latestKardexRows = [];
   let latestPeriodStartIso = null;
   let latestPeriodEndIso = null;
+  let latestComparisonRows = [];
+  let latestReportCutoffId = "";
+  let applyingCutoffAdjustment = false;
 
   function bucketKey(productId, qualityId) {
     return `${String(productId)}|${String(qualityId)}`;
@@ -2444,6 +2447,8 @@ async function pageCutoffs() {
     latestKardexRows = [];
     latestPeriodStartIso = null;
     latestPeriodEndIso = null;
+    latestComparisonRows = [];
+    latestReportCutoffId = "";
 
     const cutoffId = String(reportCutoffSel.value || selectedCutoffId || "");
     if (!cutoffId) {
@@ -2541,6 +2546,8 @@ async function pageCutoffs() {
         const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
         return {
           key,
+          product_id: String(key).split("|")[0] || null,
+          quality_id: String(key).split("|")[1] || null,
           expected,
           physical,
           diff,
@@ -2619,6 +2626,8 @@ async function pageCutoffs() {
     latestKardexRows = kardexRows;
     latestPeriodStartIso = periodStartIso;
     latestPeriodEndIso = cutoffEndIso;
+    latestComparisonRows = rows;
+    latestReportCutoffId = cutoffId;
 
     const kardexTable =
       kardexRows.length > 0
@@ -2709,6 +2718,118 @@ async function pageCutoffs() {
     ["Generar reporte de corte"]
   );
 
+  const applyCutoffBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      onclick: async () => {
+        reportMsg.replaceChildren();
+        if (applyingCutoffAdjustment) return;
+        if (!latestReportCutoffId) {
+          reportMsg.appendChild(notice("warn", "Primero genera el reporte del corte a aplicar."));
+          return;
+        }
+
+        const cutoff = findCutoff(latestReportCutoffId);
+        if (!cutoff) {
+          reportMsg.appendChild(notice("error", "No se encontro el corte del ultimo reporte."));
+          return;
+        }
+
+        const diffs = (latestComparisonRows || []).filter((r) => Math.abs(Number(r.diff || 0)) > 0.0005);
+        if (diffs.length === 0) {
+          reportMsg.appendChild(notice("ok", "No hay discrepancias que aplicar."));
+          return;
+        }
+
+        const anchorIso = cutoffAnchorIso(cutoff);
+        const anchorMs = new Date(anchorIso || "").getTime();
+        if (!Number.isFinite(anchorMs)) {
+          reportMsg.appendChild(notice("error", "Fecha/hora invalida del corte."));
+          return;
+        }
+        const occurredAt = new Date(anchorMs + 1000).toISOString(); // next instant after cutoff
+
+        const noteToken = `AUTO_CORTE:${latestReportCutoffId}`;
+        const note = `Ajuste automatico por corte ${latestReportCutoffId} (${noteToken})`;
+
+        const { data: existing, error: existingErr } = await supabase
+          .from("movements")
+          .select("id,occurred_at")
+          .eq("movement_type", "ajuste")
+          .ilike("notes", `%${noteToken}%`)
+          .order("occurred_at", { ascending: false })
+          .limit(1);
+        if (existingErr) {
+          reportMsg.appendChild(notice("error", existingErr.message));
+          return;
+        }
+        if ((existing || []).length > 0) {
+          reportMsg.appendChild(
+            notice(
+              "warn",
+              `Este corte ya tiene ajuste aplicado (${String(existing[0].id).slice(0, 8)}...). No se aplico de nuevo.`
+            )
+          );
+          return;
+        }
+
+        const lines = diffs.map((r) => ({
+          sku_id: r.primary?.id || null,
+          product_id: r.product_id,
+          quality_id: r.quality_id,
+          delta_weight_kg: Number(r.diff),
+          boxes: null,
+          price_model: null,
+          unit_price: null,
+          line_total: null,
+        }));
+
+        const movementId = crypto.randomUUID();
+        const setApplying = (on) => {
+          applyingCutoffAdjustment = on;
+          applyCutoffBtn.disabled = on;
+          applyCutoffBtn.textContent = on ? "Aplicando ajuste..." : "Aplicar diferencia al sistema";
+        };
+
+        try {
+          setApplying(true);
+          const { data: newId, error } = await withTimeout(
+            supabase.rpc("create_movement_with_lines", {
+              movement: {
+                id: movementId,
+                movement_type: "ajuste",
+                occurred_at: occurredAt,
+                notes: note,
+                currency: DEFAULT_CURRENCY,
+              },
+              lines,
+              attachments: [],
+            }),
+            NETWORK_TIMEOUT_MS,
+            "Aplicacion de ajuste por corte"
+          );
+          if (error) throw error;
+
+          reportMsg.appendChild(
+            notice(
+              "ok",
+              `Ajuste aplicado (${String(newId).slice(0, 8)}...). Se usara como base para periodos posteriores a este corte.`
+            )
+          );
+        } catch (e) {
+          reportMsg.appendChild(
+            notice("error", e?.message ? String(e.message) : "No se pudo aplicar el ajuste automatico del corte.")
+          );
+        } finally {
+          setApplying(false);
+        }
+      },
+    },
+    ["Aplicar diferencia al sistema"]
+  );
+
   detailCutoffSel.addEventListener("change", () => {
     selectedCutoffId = String(detailCutoffSel.value || "");
     if (selectedCutoffId) reportCutoffSel.value = selectedCutoffId;
@@ -2746,9 +2867,10 @@ async function pageCutoffs() {
     h("div", { class: "card col no-print" }, [
       h("div", { class: "h1", text: "Reporte de corte" }),
       h("div", { class: "muted", text: "Compara inventario fisico vs sistema y exporta kardex del periodo entre cortes." }),
+      h("div", { class: "muted", text: "Aplicar diferencia al sistema crea un Ajuste automatico (1 segundo despues del corte) para que el siguiente periodo arranque desde el inventario fisico." }),
       reportMsg,
       field("Corte a comparar", reportCutoffSel),
-      h("div", { class: "row-wrap" }, [generateReportBtn, exportKardexBtn, printBtn]),
+      h("div", { class: "row-wrap" }, [generateReportBtn, applyCutoffBtn, exportKardexBtn, printBtn]),
     ]),
     reportOut,
   ]);

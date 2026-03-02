@@ -14,7 +14,7 @@ The system is based on a **movement ledger** (kardex): you never "edit stock". Y
 - `Traspaso de Calidad` (quality transfer, -kg from one quality, +kg to another quality)
 - `Ajuste` (manual correction, +/-kg)
 - Delete/cancel movements (for mistakes/testing)
-- `Cortes fisicos` (physical inventory cutoffs by SKU with timed weigh-ins, optional proof photos, discrepancy report, print view, and Excel-compatible kardex export between cutoffs)
+- `Cortes fisicos` (physical inventory cutoffs by SKU with timed weigh-ins, optional proof photos, discrepancy report, print view, and Excel-compatible kardex export between cutoffs; includes `Aplicar diferencia al sistema` to auto-create adjustment lines after a cutoff)
 
 ## Architecture
 - Database: Supabase Postgres (tables + RLS policies)
