@@ -8,6 +8,7 @@ const ROUTE_TITLES = {
   capture: "Capturar",
   movements: "Movimientos",
   inventory: "Inventario",
+  cutoffs: "Cortes",
   reports: "Reportes",
   settings: "Ajustes",
 };
@@ -16,6 +17,7 @@ const NAV_ITEMS = [
   { route: "capture", label: "Capturar", icon: "+" },
   { route: "movements", label: "Movimientos", icon: "LOG" },
   { route: "inventory", label: "Inventario", icon: "KG" },
+  { route: "cutoffs", label: "Cortes", icon: "CUT" },
   { route: "reports", label: "Reportes", icon: "REP" },
   { route: "settings", label: "Ajustes", icon: "CFG" },
 ];
@@ -118,6 +120,18 @@ function isoFromLocalInput(dtLocal) {
 
 function localNowInputValue() {
   const d = new Date();
+  const pad = (x) => String(x).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function localInputValueFromIso(iso) {
+  const d = new Date(iso || "");
+  if (Number.isNaN(d.getTime())) return "";
   const pad = (x) => String(x).padStart(2, "0");
   const yyyy = d.getFullYear();
   const mm = pad(d.getMonth() + 1);
@@ -272,7 +286,7 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
     const nav = h("div", { class: "bottomnav" }, [
       h(
         "div",
-        { class: "bottomnav-inner" },
+        { class: "bottomnav-inner", style: `grid-template-columns: repeat(${NAV_ITEMS.length}, 1fr)` },
         NAV_ITEMS.map((it) =>
           h(
             "a",
@@ -1819,6 +1833,930 @@ async function pageReports() {
   layout(ROUTE_TITLES.reports, page);
 }
 
+async function pageCutoffs() {
+  const createMsg = h("div");
+  const listMsg = h("div");
+  const detailsMsg = h("div");
+  const reportMsg = h("div");
+
+  const listWrap = h("div", { class: "col" });
+  const lineListWrap = h("div", { class: "col" });
+  const reportOut = h("div", { class: "col" });
+
+  let cutoffs = [];
+  let selectedCutoffId = "";
+  let latestKardexRows = [];
+  let latestPeriodStartIso = null;
+  let latestPeriodEndIso = null;
+
+  function bucketKey(productId, qualityId) {
+    return `${String(productId)}|${String(qualityId)}`;
+  }
+
+  function choosePrimarySku(list) {
+    const sk = (list || []).filter(Boolean);
+    if (sk.length === 0) return null;
+    const perKg = sk.filter((s) => String(s.default_price_model || "") === "per_kg");
+    const candidates = (perKg.length ? perKg : sk).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+    return candidates[0] || sk[0] || null;
+  }
+
+  function cutoffAnchorIso(cutoff) {
+    return cutoff?.ended_at || cutoff?.started_at || null;
+  }
+
+  function cutoffLabel(cutoff) {
+    const at = cutoffAnchorIso(cutoff);
+    const label = at ? formatOccurredAt(at) : formatOccurredAt(cutoff.created_at);
+    return `${label} (${String(cutoff.id).slice(0, 8)}...)`;
+  }
+
+  function sortedSkus() {
+    return (state.skus || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+  }
+
+  function findCutoff(cutoffId) {
+    return cutoffs.find((c) => c.id === cutoffId) || null;
+  }
+
+  function findPreviousCutoff(cutoffId) {
+    const ordered = cutoffs
+      .slice()
+      .sort((a, b) => new Date(cutoffAnchorIso(a) || a.started_at).getTime() - new Date(cutoffAnchorIso(b) || b.started_at).getTime());
+    const idx = ordered.findIndex((c) => c.id === cutoffId);
+    if (idx <= 0) return null;
+    return ordered[idx - 1] || null;
+  }
+
+  function setSkuSelectOptions(selectEl) {
+    const options = sortedSkus().map((s) =>
+      h("option", { value: s.id, text: `${Number.isFinite(Number(s.code)) ? String(s.code) : ""} ${String(s.name || "")}`.trim() })
+    );
+    selectEl.replaceChildren(h("option", { value: "", text: "Elige SKU..." }), ...options);
+  }
+
+  function setCutoffSelectOptions(selectEl, { includeEmpty = false } = {}) {
+    const opts = [];
+    if (includeEmpty) opts.push(h("option", { value: "", text: "Elige corte..." }));
+    for (const c of cutoffs) {
+      opts.push(h("option", { value: c.id, text: cutoffLabel(c) }));
+    }
+    selectEl.replaceChildren(...opts);
+  }
+
+  const createStarted = h("input", { type: "datetime-local", value: localNowInputValue() });
+  const createEnded = h("input", { type: "datetime-local" });
+  const createNotes = h("textarea", { placeholder: "Notas del corte (opcional)." });
+
+  const detailCutoffSel = h("select");
+  const detailStarted = h("input", { type: "datetime-local" });
+  const detailEnded = h("input", { type: "datetime-local" });
+  const detailNotes = h("textarea", { placeholder: "Notas del corte (opcional)." });
+
+  const lineSku = h("select");
+  const lineMeasuredAt = h("input", { type: "datetime-local", value: localNowInputValue() });
+  const lineWeight = h("input", { type: "number", step: "0.001", min: "0.001", placeholder: "0.000" });
+  const lineNotes = h("textarea", { placeholder: "Notas del pesaje (opcional)." });
+  const lineProofs = h("input", { type: "file", accept: "image/*", multiple: true });
+
+  const reportCutoffSel = h("select");
+
+  setSkuSelectOptions(lineSku);
+
+  async function loadCutoffs() {
+    listMsg.replaceChildren(notice("warn", "Cargando cortes..."));
+    const { data, error } = await supabase
+      .from("physical_cutoffs")
+      .select("id,started_at,ended_at,notes,created_at")
+      .order("started_at", { ascending: false })
+      .limit(100);
+    if (error) {
+      listMsg.replaceChildren(notice("error", error.message));
+      return;
+    }
+
+    cutoffs = data || [];
+    if (selectedCutoffId && !cutoffs.some((c) => c.id === selectedCutoffId)) {
+      selectedCutoffId = "";
+    }
+    if (!selectedCutoffId && cutoffs.length > 0) {
+      selectedCutoffId = cutoffs[0].id;
+    }
+
+    setCutoffSelectOptions(detailCutoffSel, { includeEmpty: true });
+    setCutoffSelectOptions(reportCutoffSel, { includeEmpty: true });
+    if (selectedCutoffId) {
+      detailCutoffSel.value = selectedCutoffId;
+      reportCutoffSel.value = selectedCutoffId;
+    }
+
+    renderCutoffList();
+    await loadCutoffDetails();
+    listMsg.replaceChildren();
+  }
+
+  function renderCutoffList() {
+    if (cutoffs.length === 0) {
+      listWrap.replaceChildren(notice("warn", "Todavia no hay cortes fisicos."));
+      return;
+    }
+
+    listWrap.replaceChildren(
+      ...cutoffs.map((c) => {
+        const openBtn = h(
+          "button",
+          {
+            class: "btn",
+            type: "button",
+            onclick: async () => {
+              selectedCutoffId = c.id;
+              detailCutoffSel.value = c.id;
+              reportCutoffSel.value = c.id;
+              await loadCutoffDetails();
+            },
+          },
+          ["Abrir"]
+        );
+        return h("div", { class: "notice" }, [
+          h("div", { class: "row-wrap" }, [
+            h("div", { class: "mono", text: cutoffLabel(c) }),
+            h("div", { class: "spacer" }),
+            openBtn,
+          ]),
+          c.notes ? h("div", { class: "muted", text: String(c.notes) }) : null,
+          h("div", { class: "muted", text: `Inicio: ${formatOccurredAt(c.started_at)}` }),
+          c.ended_at ? h("div", { class: "muted", text: `Cierre: ${formatOccurredAt(c.ended_at)}` }) : h("div", { class: "muted", text: "Cierre: pendiente" }),
+        ]);
+      })
+    );
+  }
+
+  async function loadCutoffLines(cutoffId) {
+    const { data, error } = await supabase
+      .from("physical_cutoff_lines")
+      .select(
+        "id,cutoff_id,sku_id,measured_at,weight_kg,notes,created_at," +
+          "physical_cutoff_attachments(id,storage_path,original_filename,content_type,size_bytes)"
+      )
+      .eq("cutoff_id", cutoffId)
+      .order("measured_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  async function loadCutoffDetails() {
+    detailsMsg.replaceChildren();
+    lineListWrap.replaceChildren();
+
+    const cutoffId = String(detailCutoffSel.value || selectedCutoffId || "");
+    selectedCutoffId = cutoffId;
+    if (!cutoffId) {
+      lineListWrap.replaceChildren(notice("warn", "Elige un corte para ver detalle y cargar pesajes."));
+      return;
+    }
+
+    const cutoff = findCutoff(cutoffId);
+    if (!cutoff) {
+      lineListWrap.replaceChildren(notice("error", "El corte seleccionado no existe."));
+      return;
+    }
+
+    detailStarted.value = localInputValueFromIso(cutoff.started_at);
+    detailEnded.value = cutoff.ended_at ? localInputValueFromIso(cutoff.ended_at) : "";
+    detailNotes.value = String(cutoff.notes || "");
+
+    lineListWrap.replaceChildren(notice("warn", "Cargando pesajes..."));
+    try {
+      const lines = await loadCutoffLines(cutoffId);
+      const totalKg = lines.reduce((acc, l) => acc + Number(l.weight_kg || 0), 0);
+
+      if (lines.length === 0) {
+        lineListWrap.replaceChildren(
+          h("div", { class: "notice" }, [
+            h("div", { class: "muted", text: "Sin pesajes en este corte." }),
+            h("div", { class: "mono", text: `Total fisico: ${fmtKg(0)} kg` }),
+          ])
+        );
+        return;
+      }
+
+      const table = h("table", { class: "table" }, [
+        h("thead", {}, [
+          h("tr", {}, [
+            h("th", { text: "Fecha/hora" }),
+            h("th", { text: "SKU" }),
+            h("th", { text: "Kg" }),
+            h("th", { text: "Evidencia" }),
+            h("th", { text: "Notas" }),
+            h("th", { text: "" }),
+          ]),
+        ]),
+        h(
+          "tbody",
+          {},
+          lines.map((ln) => {
+            const att = ln.physical_cutoff_attachments || [];
+            const viewBtn =
+              att.length > 0
+                ? h(
+                    "button",
+                    {
+                      class: "btn",
+                      type: "button",
+                      onclick: async () => {
+                        const first = att[0];
+                        const { data } = await supabase.storage
+                          .from("physical-cutoff-proofs")
+                          .createSignedUrl(first.storage_path, 60 * 30);
+                        if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+                      },
+                    },
+                    [`Ver (${att.length})`]
+                  )
+                : h("span", { class: "muted", text: "Sin evidencia" });
+
+            const deleteBtn = h(
+              "button",
+              {
+                class: "btn btn-danger",
+                type: "button",
+                onclick: async () => {
+                  if (!confirm("Eliminar este pesaje?")) return;
+                  const paths = (att || []).map((a) => a.storage_path).filter(Boolean);
+                  const { error: delErr } = await supabase.from("physical_cutoff_lines").delete().eq("id", ln.id);
+                  if (delErr) {
+                    detailsMsg.replaceChildren(notice("error", delErr.message));
+                    return;
+                  }
+                  if (paths.length > 0) {
+                    try {
+                      await supabase.storage.from("physical-cutoff-proofs").remove(paths);
+                    } catch {
+                      // ignore
+                    }
+                  }
+                  detailsMsg.replaceChildren(notice("ok", "Pesaje eliminado."));
+                  await loadCutoffDetails();
+                },
+              },
+              ["Eliminar"]
+            );
+
+            return h("tr", {}, [
+              h("td", { class: "mono", text: formatOccurredAt(ln.measured_at) }),
+              h("td", { class: "mono", text: skuLabel(ln.sku_id) || "(SKU desconocido)" }),
+              h("td", { class: "mono", text: fmtKg(ln.weight_kg) }),
+              h("td", {}, [viewBtn]),
+              h("td", { text: String(ln.notes || "") }),
+              h("td", {}, [deleteBtn]),
+            ]);
+          })
+        ),
+      ]);
+
+      lineListWrap.replaceChildren(
+        h("div", { class: "row-wrap" }, [
+          h("div", { class: "h1", text: "Pesajes del corte" }),
+          h("div", { class: "spacer" }),
+          h("div", { class: "mono", text: `Total fisico: ${fmtKg(totalKg)} kg` }),
+        ]),
+        tableScroll(table)
+      );
+    } catch (e) {
+      lineListWrap.replaceChildren(notice("error", e?.message ? String(e.message) : "No se pudieron cargar los pesajes."));
+    }
+  }
+
+  const createBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      onclick: async () => {
+        createMsg.replaceChildren();
+        const startedIso = isoFromLocalInput(String(createStarted.value || ""));
+        const endedIso = createEnded.value ? isoFromLocalInput(String(createEnded.value || "")) : null;
+        if (!startedIso) {
+          createMsg.appendChild(notice("error", "Fecha/hora de inicio invalida."));
+          return;
+        }
+        if (createEnded.value && !endedIso) {
+          createMsg.appendChild(notice("error", "Fecha/hora de cierre invalida."));
+          return;
+        }
+        if (endedIso && new Date(endedIso).getTime() < new Date(startedIso).getTime()) {
+          createMsg.appendChild(notice("error", "Cierre no puede ser antes que inicio."));
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from("physical_cutoffs")
+          .insert({
+            started_at: startedIso,
+            ended_at: endedIso,
+            notes: String(createNotes.value || "").trim() || null,
+          })
+          .select("id")
+          .single();
+        if (error) {
+          createMsg.appendChild(notice("error", error.message));
+          return;
+        }
+
+        selectedCutoffId = data.id;
+        detailCutoffSel.value = data.id;
+        reportCutoffSel.value = data.id;
+        createNotes.value = "";
+        createMsg.appendChild(notice("ok", "Corte creado."));
+        await loadCutoffs();
+      },
+    },
+    ["Crear corte"]
+  );
+
+  const saveCutoffBtn = h(
+    "button",
+    {
+      class: "btn",
+      type: "button",
+      onclick: async () => {
+        detailsMsg.replaceChildren();
+        const cutoffId = String(detailCutoffSel.value || "");
+        if (!cutoffId) {
+          detailsMsg.appendChild(notice("error", "Elige un corte."));
+          return;
+        }
+        const startedIso = isoFromLocalInput(String(detailStarted.value || ""));
+        const endedIso = detailEnded.value ? isoFromLocalInput(String(detailEnded.value || "")) : null;
+        if (!startedIso) {
+          detailsMsg.appendChild(notice("error", "Inicio invalido."));
+          return;
+        }
+        if (detailEnded.value && !endedIso) {
+          detailsMsg.appendChild(notice("error", "Cierre invalido."));
+          return;
+        }
+        if (endedIso && new Date(endedIso).getTime() < new Date(startedIso).getTime()) {
+          detailsMsg.appendChild(notice("error", "Cierre no puede ser antes que inicio."));
+          return;
+        }
+
+        const { error } = await supabase
+          .from("physical_cutoffs")
+          .update({
+            started_at: startedIso,
+            ended_at: endedIso,
+            notes: String(detailNotes.value || "").trim() || null,
+          })
+          .eq("id", cutoffId);
+        if (error) {
+          detailsMsg.appendChild(notice("error", error.message));
+          return;
+        }
+        detailsMsg.appendChild(notice("ok", "Corte actualizado."));
+        await loadCutoffs();
+      },
+    },
+    ["Guardar corte"]
+  );
+
+  const deleteCutoffBtn = h(
+    "button",
+    {
+      class: "btn btn-danger",
+      type: "button",
+      onclick: async () => {
+        detailsMsg.replaceChildren();
+        const cutoffId = String(detailCutoffSel.value || "");
+        if (!cutoffId) {
+          detailsMsg.appendChild(notice("error", "Elige un corte."));
+          return;
+        }
+        if (!confirm("Eliminar este corte y todos sus pesajes/evidencias?")) return;
+
+        // Best-effort: remove storage objects first, then DB rows.
+        try {
+          const { data: rows } = await supabase
+            .from("physical_cutoff_lines")
+            .select("physical_cutoff_attachments(storage_path)")
+            .eq("cutoff_id", cutoffId);
+          const paths = [];
+          for (const r of rows || []) {
+            for (const a of r.physical_cutoff_attachments || []) {
+              if (a.storage_path) paths.push(a.storage_path);
+            }
+          }
+          if (paths.length > 0) {
+            try {
+              await supabase.storage.from("physical-cutoff-proofs").remove(paths);
+            } catch {
+              // ignore
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        const { error } = await supabase.from("physical_cutoffs").delete().eq("id", cutoffId);
+        if (error) {
+          detailsMsg.appendChild(notice("error", error.message));
+          return;
+        }
+        detailsMsg.appendChild(notice("ok", "Corte eliminado."));
+        selectedCutoffId = "";
+        await loadCutoffs();
+      },
+    },
+    ["Eliminar corte"]
+  );
+
+  const addLineBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      onclick: async () => {
+        detailsMsg.replaceChildren();
+        const cutoffId = String(detailCutoffSel.value || selectedCutoffId || "");
+        if (!cutoffId) {
+          detailsMsg.appendChild(notice("error", "Elige un corte."));
+          return;
+        }
+        const skuId = String(lineSku.value || "");
+        if (!skuId) {
+          detailsMsg.appendChild(notice("error", "Elige un SKU."));
+          return;
+        }
+        const measuredIso = isoFromLocalInput(String(lineMeasuredAt.value || ""));
+        if (!measuredIso) {
+          detailsMsg.appendChild(notice("error", "Fecha/hora de pesaje invalida."));
+          return;
+        }
+        const weight = Number(lineWeight.value);
+        if (!Number.isFinite(weight) || weight <= 0) {
+          detailsMsg.appendChild(notice("error", "Kg invalidos."));
+          return;
+        }
+
+        const userId = state.session?.user?.id;
+        if (!userId) {
+          detailsMsg.appendChild(notice("error", "Sesion invalida."));
+          return;
+        }
+
+        const files = Array.from(lineProofs.files || []);
+        const lineId = crypto.randomUUID();
+        const uploaded = [];
+        try {
+          const { error: lineErr } = await supabase.from("physical_cutoff_lines").insert({
+            id: lineId,
+            cutoff_id: cutoffId,
+            sku_id: skuId,
+            measured_at: measuredIso,
+            weight_kg: weight,
+            notes: String(lineNotes.value || "").trim() || null,
+          });
+          if (lineErr) throw lineErr;
+
+          for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const safe = sanitizeFilename(f.name);
+            const path = `${userId}/${cutoffId}/${lineId}/${Date.now()}_${i}_${safe}`;
+            const { error: upErr } = await withTimeout(
+              supabase.storage.from("physical-cutoff-proofs").upload(path, f, {
+                cacheControl: "3600",
+                upsert: false,
+                contentType: f.type || "application/octet-stream",
+              }),
+              NETWORK_TIMEOUT_MS,
+              `Subida de evidencia de corte ${i + 1}`
+            );
+            if (upErr) throw upErr;
+            uploaded.push({
+              cutoff_line_id: lineId,
+              storage_bucket: "physical-cutoff-proofs",
+              storage_path: path,
+              original_filename: f.name || null,
+              content_type: f.type || null,
+              size_bytes: Number.isFinite(f.size) ? f.size : null,
+            });
+          }
+
+          if (uploaded.length > 0) {
+            const { error: attErr } = await supabase.from("physical_cutoff_attachments").insert(uploaded);
+            if (attErr) throw attErr;
+          }
+
+          lineWeight.value = "";
+          lineNotes.value = "";
+          lineProofs.value = "";
+          lineMeasuredAt.value = localNowInputValue();
+          detailsMsg.appendChild(notice("ok", "Pesaje guardado."));
+          await loadCutoffDetails();
+        } catch (e) {
+          if (uploaded.length > 0) {
+            try {
+              await supabase.storage
+                .from("physical-cutoff-proofs")
+                .remove(uploaded.map((u) => u.storage_path));
+            } catch {
+              // ignore
+            }
+          }
+          detailsMsg.appendChild(notice("error", e?.message ? String(e.message) : "No se pudo guardar el pesaje."));
+        }
+      },
+    },
+    ["Guardar pesaje"]
+  );
+
+  const exportKardexBtn = h(
+    "button",
+    {
+      class: "btn",
+      type: "button",
+      onclick: () => {
+        reportMsg.replaceChildren();
+        if (!latestPeriodEndIso) {
+          reportMsg.appendChild(notice("warn", "Genera el reporte antes de exportar."));
+          return;
+        }
+        const header = [
+          "movement_id",
+          "movement_type",
+          "occurred_at",
+          "sku",
+          "product",
+          "quality",
+          "delta_weight_kg",
+          "boxes",
+          "price_model",
+          "unit_price",
+          "line_total",
+          "notes",
+        ];
+        const lines = [header.join(",")];
+        for (const row of latestKardexRows) {
+          const csvRow = [
+            row.movement_id,
+            row.movement_type,
+            row.occurred_at,
+            row.sku_label,
+            row.product_name,
+            row.quality_name,
+            fmtKg(row.delta_weight_kg),
+            row.boxes != null ? String(row.boxes) : "",
+            row.price_model || "",
+            row.unit_price != null ? String(row.unit_price) : "",
+            row.line_total != null ? String(row.line_total) : "",
+            String(row.notes || "").replaceAll("\n", " "),
+          ];
+          lines.push(csvRow.map((v) => `"${String(v ?? "").replaceAll("\"", "\"\"")}"`).join(","));
+        }
+        const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const startLabel = latestPeriodStartIso ? String(latestPeriodStartIso).slice(0, 10) : "inicio";
+        const endLabel = String(latestPeriodEndIso).slice(0, 10);
+        const a = h("a", { href: url, download: `kardex_corte_${startLabel}_a_${endLabel}.csv` });
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        reportMsg.appendChild(notice("ok", "Excel (CSV) descargado."));
+      },
+    },
+    ["Exportar Kardex (Excel CSV)"]
+  );
+
+  const printBtn = h(
+    "button",
+    {
+      class: "btn",
+      type: "button",
+      onclick: () => window.print(),
+    },
+    ["Imprimir reporte"]
+  );
+
+  async function generateReport() {
+    reportMsg.replaceChildren();
+    reportOut.replaceChildren();
+    latestKardexRows = [];
+    latestPeriodStartIso = null;
+    latestPeriodEndIso = null;
+
+    const cutoffId = String(reportCutoffSel.value || selectedCutoffId || "");
+    if (!cutoffId) {
+      reportMsg.appendChild(notice("error", "Elige un corte."));
+      return;
+    }
+    const cutoff = findCutoff(cutoffId);
+    if (!cutoff) {
+      reportMsg.appendChild(notice("error", "Corte no encontrado."));
+      return;
+    }
+
+    const cutoffEndIso = cutoffAnchorIso(cutoff);
+    if (!cutoffEndIso) {
+      reportMsg.appendChild(notice("error", "El corte no tiene fecha valida para comparar."));
+      return;
+    }
+
+    const prevCutoff = findPreviousCutoff(cutoffId);
+    const periodStartIso = prevCutoff ? cutoffAnchorIso(prevCutoff) : null;
+
+    reportMsg.appendChild(notice("warn", "Generando reporte..."));
+
+    const { data: physicalLines, error: physicalErr } = await supabase
+      .from("physical_cutoff_lines")
+      .select("id,sku_id,measured_at,weight_kg,notes")
+      .eq("cutoff_id", cutoffId)
+      .order("measured_at", { ascending: true });
+    if (physicalErr) {
+      reportMsg.replaceChildren(notice("error", physicalErr.message));
+      return;
+    }
+
+    const { data: allMoves, error: allMovesErr } = await supabase
+      .from("movements")
+      .select("id,occurred_at,movement_lines(product_id,quality_id,delta_weight_kg)")
+      .lte("occurred_at", cutoffEndIso)
+      .order("occurred_at", { ascending: true });
+    if (allMovesErr) {
+      reportMsg.replaceChildren(notice("error", allMovesErr.message));
+      return;
+    }
+
+    let periodQuery = supabase
+      .from("movements")
+      .select(
+        "id,movement_type,occurred_at,notes,currency," +
+          "movement_lines(sku_id,product_id,quality_id,delta_weight_kg,boxes,price_model,unit_price,line_total)"
+      )
+      .order("occurred_at", { ascending: true });
+    if (periodStartIso) periodQuery = periodQuery.gt("occurred_at", periodStartIso);
+    periodQuery = periodQuery.lte("occurred_at", cutoffEndIso);
+    const { data: periodMoves, error: periodErr } = await periodQuery;
+    if (periodErr) {
+      reportMsg.replaceChildren(notice("error", periodErr.message));
+      return;
+    }
+
+    const physicalByBucket = new Map();
+    for (const ln of physicalLines || []) {
+      const sku = skuById(ln.sku_id);
+      if (!sku) continue;
+      const key = bucketKey(sku.product_id, sku.quality_id);
+      physicalByBucket.set(key, Number(physicalByBucket.get(key) || 0) + Number(ln.weight_kg || 0));
+    }
+
+    const expectedByBucket = new Map();
+    for (const m of allMoves || []) {
+      for (const l of m.movement_lines || []) {
+        const key = bucketKey(l.product_id, l.quality_id);
+        expectedByBucket.set(key, Number(expectedByBucket.get(key) || 0) + Number(l.delta_weight_kg || 0));
+      }
+    }
+
+    const bucketSkus = new Map();
+    for (const s of state.skus || []) {
+      const key = bucketKey(s.product_id, s.quality_id);
+      if (!bucketSkus.has(key)) bucketSkus.set(key, []);
+      bucketSkus.get(key).push(s);
+    }
+    for (const skList of bucketSkus.values()) {
+      skList.sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+    }
+
+    const keys = new Set([...physicalByBucket.keys(), ...expectedByBucket.keys()]);
+    const rows = Array.from(keys)
+      .map((key) => {
+        const skList = (bucketSkus.get(key) || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+        const primary = choosePrimarySku(skList);
+        const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
+        const expected = Number(expectedByBucket.get(key) || 0);
+        const physical = Number(physicalByBucket.get(key) || 0);
+        const diff = physical - expected;
+        const pct = Math.abs(expected) > 0 ? (diff / Math.abs(expected)) * 100 : physical === 0 ? 0 : null;
+        const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
+        return {
+          key,
+          expected,
+          physical,
+          diff,
+          pct,
+          primary,
+          skList,
+          codes,
+          sortCode,
+        };
+      })
+      .filter((r) => Math.abs(r.expected) > 0 || Math.abs(r.physical) > 0)
+      .sort((a, b) => (a.sortCode - b.sortCode) || String(skuLabel(a.primary?.id || "")).localeCompare(String(skuLabel(b.primary?.id || ""))));
+
+    const discrepancyRows = rows.filter((r) => Math.abs(r.diff) > 0.0005);
+    const totalExpected = rows.reduce((acc, r) => acc + r.expected, 0);
+    const totalPhysical = rows.reduce((acc, r) => acc + r.physical, 0);
+    const totalDiff = totalPhysical - totalExpected;
+    const totalPct = Math.abs(totalExpected) > 0 ? (totalDiff / Math.abs(totalExpected)) * 100 : null;
+
+    const compareTable = h("table", { class: "table" }, [
+      h("thead", {}, [
+        h("tr", {}, [
+          h("th", { text: "SKU(s)" }),
+          h("th", { text: "Descripcion" }),
+          h("th", { text: "Fisico (kg)" }),
+          h("th", { text: "Sistema (kg)" }),
+          h("th", { text: "Diferencia (kg)" }),
+          h("th", { text: "Diferencia %" }),
+        ]),
+      ]),
+      h(
+        "tbody",
+        {},
+        rows.map((r) => {
+          const diffTxt = `${r.diff > 0 ? "+" : ""}${fmtKg(r.diff)}`;
+          const pctTxt = r.pct == null ? "N/A" : `${r.pct > 0 ? "+" : ""}${r.pct.toFixed(2)}%`;
+          const desc = r.primary
+            ? `${Number(r.primary.code)} ${String(r.primary.name)}`
+            : r.skList.length
+              ? r.skList.map((s) => String(s.name)).join(", ")
+              : "(Sin SKU)";
+          return h("tr", {}, [
+            h("td", { class: "mono", text: r.codes || "" }),
+            h("td", { text: desc }),
+            h("td", { class: "mono", text: fmtKg(r.physical) }),
+            h("td", { class: "mono", text: fmtKg(r.expected) }),
+            h("td", { class: `mono ${r.diff >= 0 ? "delta-pos" : "delta-neg"}`, text: diffTxt }),
+            h("td", { class: `mono ${r.pct != null && r.pct >= 0 ? "delta-pos" : "delta-neg"}`, text: pctTxt }),
+          ]);
+        })
+      ),
+    ]);
+
+    const kardexRows = [];
+    for (const m of periodMoves || []) {
+      const lines = m.movement_lines || [];
+      for (const l of lines) {
+        kardexRows.push({
+          movement_id: m.id,
+          movement_type: m.movement_type,
+          occurred_at: m.occurred_at,
+          sku_label: skuLabel(l.sku_id) || "",
+          product_name: productName(l.product_id),
+          quality_name: qualityName(l.quality_id),
+          delta_weight_kg: Number(l.delta_weight_kg || 0),
+          boxes: l.boxes != null ? Number(l.boxes || 0) : null,
+          price_model: l.price_model || "",
+          unit_price: l.unit_price != null ? Number(l.unit_price) : null,
+          line_total: l.line_total != null ? Number(l.line_total) : null,
+          notes: String(m.notes || ""),
+          currency: String(m.currency || DEFAULT_CURRENCY),
+        });
+      }
+    }
+
+    latestKardexRows = kardexRows;
+    latestPeriodStartIso = periodStartIso;
+    latestPeriodEndIso = cutoffEndIso;
+
+    const kardexTable =
+      kardexRows.length > 0
+        ? h("table", { class: "table" }, [
+            h("thead", {}, [
+              h("tr", {}, [
+                h("th", { text: "Fecha/hora" }),
+                h("th", { text: "Tipo" }),
+                h("th", { text: "SKU" }),
+                h("th", { text: "Producto" }),
+                h("th", { text: "Calidad" }),
+                h("th", { text: "Delta (kg)" }),
+                h("th", { text: "Cajas" }),
+                h("th", { text: "Precio" }),
+                h("th", { text: "Total" }),
+                h("th", { text: "Notas" }),
+              ]),
+            ]),
+            h(
+              "tbody",
+              {},
+              kardexRows.map((r) => {
+                const price =
+                  r.unit_price != null && r.price_model
+                    ? r.price_model === "per_box"
+                      ? `${fmtMoney(r.unit_price, r.currency)} / caja`
+                      : `${fmtMoney(r.unit_price, r.currency)} / kg`
+                    : "";
+                const total = r.line_total != null ? fmtMoney(r.line_total, r.currency) : "";
+                return h("tr", {}, [
+                  h("td", { class: "mono", text: formatOccurredAt(r.occurred_at) }),
+                  h("td", { text: movementLabel(r.movement_type) }),
+                  h("td", { class: "mono", text: r.sku_label }),
+                  h("td", { text: r.product_name }),
+                  h("td", { text: r.quality_name }),
+                  h("td", { class: "mono", text: fmtKg(r.delta_weight_kg) }),
+                  h("td", { class: "mono", text: r.boxes != null ? String(r.boxes) : "" }),
+                  h("td", { text: price }),
+                  h("td", { class: "mono", text: total }),
+                  h("td", { text: r.notes }),
+                ]);
+              })
+            ),
+          ])
+        : h("div", { class: "notice" }, [h("div", { class: "muted", text: "Sin movimientos en el periodo entre cortes." })]);
+
+    reportOut.replaceChildren(
+      h("div", { class: "card col" }, [
+        h("div", { class: "h1", text: "Resumen de corte" }),
+        h("div", { class: "muted", text: `Corte actual: ${cutoffLabel(cutoff)}` }),
+        prevCutoff ? h("div", { class: "muted", text: `Corte previo: ${cutoffLabel(prevCutoff)}` }) : h("div", { class: "muted", text: "Corte previo: no existe (primer corte)." }),
+        h("div", { class: "muted", text: `Periodo kardex: ${periodStartIso ? formatOccurredAt(periodStartIso) : "Inicio historico"} -> ${formatOccurredAt(cutoffEndIso)}` }),
+        h("div", { class: "grid2" }, [
+          h("div", { class: "notice" }, [h("div", { class: "muted", text: "Fisico total (kg)" }), h("div", { class: "mono", text: fmtKg(totalPhysical) })]),
+          h("div", { class: "notice" }, [h("div", { class: "muted", text: "Sistema total (kg)" }), h("div", { class: "mono", text: fmtKg(totalExpected) })]),
+          h("div", { class: "notice" }, [
+            h("div", { class: "muted", text: "Diferencia total (kg)" }),
+            h("div", { class: `mono ${totalDiff >= 0 ? "delta-pos" : "delta-neg"}`, text: `${totalDiff > 0 ? "+" : ""}${fmtKg(totalDiff)}` }),
+          ]),
+          h("div", { class: "notice" }, [
+            h("div", { class: "muted", text: "Diferencia total %" }),
+            h("div", { class: `mono ${totalPct != null && totalPct >= 0 ? "delta-pos" : "delta-neg"}`, text: totalPct == null ? "N/A" : `${totalPct > 0 ? "+" : ""}${totalPct.toFixed(2)}%` }),
+          ]),
+        ]),
+      ]),
+      h("div", { class: "card col" }, [
+        h("div", { class: "h1", text: "Comparacion fisico vs sistema por SKU" }),
+        h("div", { class: "muted", text: `Discrepancias detectadas: ${discrepancyRows.length}` }),
+        tableScroll(compareTable),
+      ]),
+      h("div", { class: "card col" }, [
+        h("div", { class: "h1", text: "Kardex del periodo entre cortes" }),
+        h("div", { class: "muted", text: "Este detalle se exporta a Excel (CSV)." }),
+        tableScroll(kardexTable),
+      ])
+    );
+
+    reportMsg.replaceChildren(notice("ok", "Reporte generado."));
+  }
+
+  const generateReportBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      onclick: generateReport,
+    },
+    ["Generar reporte de corte"]
+  );
+
+  detailCutoffSel.addEventListener("change", () => {
+    selectedCutoffId = String(detailCutoffSel.value || "");
+    if (selectedCutoffId) reportCutoffSel.value = selectedCutoffId;
+    loadCutoffDetails();
+  });
+
+  const page = h("div", { class: "col" }, [
+    h("div", { class: "card col no-print" }, [
+      h("div", { class: "h1", text: "Nuevo corte fisico" }),
+      h("div", { class: "muted", text: "Registra un corte para comparar inventario fisico vs sistema." }),
+      createMsg,
+      h("div", { class: "grid2" }, [field("Inicio", createStarted), field("Cierre (opcional)", createEnded)]),
+      field("Notas", createNotes),
+      h("div", { class: "row-wrap" }, [createBtn]),
+    ]),
+    h("div", { class: "grid2" }, [
+      h("div", { class: "card col no-print" }, [h("div", { class: "h1", text: "Cortes" }), listMsg, listWrap]),
+      h("div", { class: "card col no-print" }, [
+        h("div", { class: "h1", text: "Detalle del corte" }),
+        detailsMsg,
+        field("Corte", detailCutoffSel),
+        h("div", { class: "grid2" }, [field("Inicio", detailStarted), field("Cierre", detailEnded)]),
+        field("Notas", detailNotes),
+        h("div", { class: "row-wrap" }, [saveCutoffBtn, deleteCutoffBtn]),
+        h("div", { class: "divider" }),
+        h("div", { class: "h1", text: "Agregar pesaje por SKU" }),
+        h("div", { class: "grid2" }, [field("SKU", lineSku), field("Fecha/hora pesaje", lineMeasuredAt)]),
+        h("div", { class: "grid2" }, [field("Peso (kg)", lineWeight), field("Evidencia (opcional)", lineProofs)]),
+        field("Notas del pesaje", lineNotes),
+        h("div", { class: "row-wrap" }, [addLineBtn]),
+        h("div", { class: "divider" }),
+        lineListWrap,
+      ]),
+    ]),
+    h("div", { class: "card col no-print" }, [
+      h("div", { class: "h1", text: "Reporte de corte" }),
+      h("div", { class: "muted", text: "Compara inventario fisico vs sistema y exporta kardex del periodo entre cortes." }),
+      reportMsg,
+      field("Corte a comparar", reportCutoffSel),
+      h("div", { class: "row-wrap" }, [generateReportBtn, exportKardexBtn, printBtn]),
+    ]),
+    reportOut,
+  ]);
+
+  layout(ROUTE_TITLES.cutoffs, page);
+  await loadCutoffs();
+}
+
 async function pageSettings() {
   const msg = h("div");
 
@@ -2359,6 +3297,7 @@ async function render() {
   if (r === "capture") return pageCapture();
   if (r === "movements") return pageMovements();
   if (r === "inventory") return pageInventory();
+  if (r === "cutoffs") return pageCutoffs();
   if (r === "reports") return pageReports();
   if (r === "settings") return pageSettings();
 

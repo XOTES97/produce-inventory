@@ -285,6 +285,8 @@ textarea { min-height: 84px; resize: vertical; }
 }
 
 .right { text-align: right; }
+.delta-pos { color: var(--green2); }
+.delta-neg { color: var(--red); }
 
 .thumbgrid {
   display: grid;
@@ -356,6 +358,29 @@ textarea { min-height: 84px; resize: vertical; }
   background: rgba(251, 247, 238, 0.92);
   box-shadow: 0 18px 60px rgba(0,0,0,0.26);
   padding: 14px;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  .topbar,
+  .bottomnav,
+  .no-print {
+    display: none !important;
+  }
+
+  .content {
+    max-width: none;
+    padding: 0 10mm 0 10mm;
+  }
+
+  .card {
+    box-shadow: none;
+    border-color: #d8d8d8;
+    background: #fff;
+  }
 }
 
 .modal-header {

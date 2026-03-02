@@ -14,6 +14,7 @@ The system is based on a **movement ledger** (kardex): you never "edit stock". Y
 - `Traspaso de Calidad` (quality transfer, -kg from one quality, +kg to another quality)
 - `Ajuste` (manual correction, +/-kg)
 - Delete/cancel movements (for mistakes/testing)
+- `Cortes fisicos` (physical inventory cutoffs by SKU with timed weigh-ins, optional proof photos, discrepancy report, print view, and Excel-compatible kardex export between cutoffs)
 
 ## Architecture
 - Database: Supabase Postgres (tables + RLS policies)
@@ -24,6 +25,7 @@ The system is based on a **movement ledger** (kardex): you never "edit stock". Y
 1. Create a new Supabase project.
 2. In Supabase SQL Editor, run:
    - `supabase/schema.sql`
+   - If your app is already live and you are updating from an older version, run `supabase/cutoffs_patch.sql` once.
 3. Create your user (email + password) in Supabase Auth.
 4. (Recommended) Disable public sign-ups in Supabase Auth settings so you remain the only user.
 5. Get:

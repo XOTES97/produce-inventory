@@ -1,5 +1,5 @@
 // Network-first so app updates deploy cleanly (offline support is best-effort).
-const CACHE_NAME = "produce-inventory-pwa-v3";
+const CACHE_NAME = "produce-inventory-pwa-v4";
 const PRECACHE = [
   "./",
   "./index.html",
