@@ -155,6 +155,11 @@ textarea { min-height: 84px; resize: vertical; }
 }
 
 .btn:active { transform: translateY(1px); }
+.btn[disabled] {
+  opacity: 0.58;
+  cursor: not-allowed;
+  transform: none;
+}
 
 .btn-primary {
   border-color: rgba(29, 107, 58, 0.35);

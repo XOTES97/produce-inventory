@@ -33,6 +33,7 @@ const STORAGE_KEYS = {
   captureFixedDatetimeLock: "produce_inventory.capture.fixed_datetime_lock",
   captureFixedDatetimeValue: "produce_inventory.capture.fixed_datetime_value",
 };
+const NETWORK_TIMEOUT_MS = 45000;
 
 function route() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
@@ -58,6 +59,20 @@ function storageSet(key, value) {
     localStorage.setItem(key, String(value));
   } catch {
     // ignore
+  }
+}
+
+async function withTimeout(promise, ms, label) {
+  let t = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        t = setTimeout(() => reject(new Error(`${label} excedio el tiempo de espera.`)), ms);
+      }),
+    ]);
+  } finally {
+    if (t) clearTimeout(t);
   }
 }
 
@@ -731,13 +746,40 @@ async function pageCapture() {
     }
   });
 
-	  const submitBtn = h(
-	    "button",
-	    {
-	      class: "btn btn-primary",
-	      type: "button",
-	      onclick: async () => {
-	        msg.replaceChildren();
+  function resetCaptureFormAfterSave() {
+    notes.value = "";
+    proofs.value = "";
+    if (lockOccurredAt.checked) {
+      storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    } else {
+      occurredAt.value = localNowInputValue();
+    }
+    reportedBy.value = "";
+    fromQuality.value = "";
+    toQuality.value = "";
+    fromSku.value = "";
+    toSku.value = "";
+    adjustDir.value = "decrease";
+    linesWrap.replaceChildren();
+    lineRows.length = 0;
+    addLine();
+    updateMode(currentMode);
+  }
+
+  let isSubmitting = false;
+  const submitBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      onclick: async () => {
+        if (isSubmitting) return;
+        msg.replaceChildren();
+
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          msg.appendChild(notice("warn", "Sin conexion. Revisa internet e intenta de nuevo."));
+          return;
+        }
 
         const dtIso = isoFromLocalInput(String(occurredAt.value || ""));
         if (!dtIso) {
@@ -746,39 +788,38 @@ async function pageCapture() {
         }
 
         const files = Array.from(proofs.files || []);
+        const rawLines = lineRows.map((r) => r.get());
+        const parsed = [];
 
-	        const rawLines = lineRows.map((r) => r.get());
-	        const parsed = [];
+        const fromSkuId = String(fromSku.value || "");
+        const toSkuId = String(toSku.value || "");
+        const fromSkuObj = fromSkuId ? skuById(fromSkuId) : null;
+        const toSkuObj = toSkuId ? skuById(toSkuId) : null;
 
-	        const fromSkuId = String(fromSku.value || "");
-	        const toSkuId = String(toSku.value || "");
-	        const fromSkuObj = fromSkuId ? skuById(fromSkuId) : null;
-	        const toSkuObj = toSkuId ? skuById(toSkuId) : null;
+        if (currentMode === "traspaso_sku") {
+          if (!fromSkuObj || !toSkuObj) {
+            msg.appendChild(notice("error", "Traspaso SKU requiere De SKU y A SKU."));
+            return;
+          }
+          if (fromSkuObj.id === toSkuObj.id) {
+            msg.appendChild(notice("error", "De SKU y A SKU deben ser diferentes."));
+            return;
+          }
+        }
 
-	        if (currentMode === "traspaso_sku") {
-	          if (!fromSkuObj || !toSkuObj) {
-	            msg.appendChild(notice("error", "Traspaso SKU requiere De SKU y A SKU."));
-	            return;
-	          }
-	          if (fromSkuObj.id === toSkuObj.id) {
-	            msg.appendChild(notice("error", "De SKU y A SKU deben ser diferentes."));
-	            return;
-	          }
-	        }
-
-	        for (const [i, ln] of rawLines.entries()) {
-	          const sku_id = String(ln.sku_id || "").trim();
-	          const product_id = ln.product_id;
-	          const quality_id = ln.quality_id;
+        for (const [i, ln] of rawLines.entries()) {
+          const sku_id = String(ln.sku_id || "").trim();
+          const product_id = ln.product_id;
+          const quality_id = ln.quality_id;
           const w = Number(ln.weight_kg);
-	          if (currentMode !== "traspaso_sku" && !product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
-	          if (currentMode !== "traspaso_calidad" && currentMode !== "traspaso_sku" && !quality_id)
-	            return msg.appendChild(notice("error", `Linea ${i + 1}: elige una calidad.`));
-	          if (!Number.isFinite(w) || w <= 0) return msg.appendChild(notice("error", `Linea ${i + 1}: kg invalido.`));
+          if (currentMode !== "traspaso_sku" && !product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
+          if (currentMode !== "traspaso_calidad" && currentMode !== "traspaso_sku" && !quality_id) {
+            return msg.appendChild(notice("error", `Linea ${i + 1}: elige una calidad.`));
+          }
+          if (!Number.isFinite(w) || w <= 0) return msg.appendChild(notice("error", `Linea ${i + 1}: kg invalido.`));
 
-	          const row = { sku_id: sku_id || null, product_id: product_id || null, weight_kg: w };
-
-	          if (currentMode !== "traspaso_calidad") row.quality_id = quality_id || null;
+          const row = { sku_id: sku_id || null, product_id: product_id || null, weight_kg: w };
+          if (currentMode !== "traspaso_calidad") row.quality_id = quality_id || null;
 
           if (currentMode === "venta") {
             const pm = ln.price_model;
@@ -805,8 +846,6 @@ async function pageCapture() {
           parsed.push(row);
         }
 
-	        // Traspaso SKU line buckets are derived from De/A SKU, so line rows only need kg.
-
         if (currentMode === "traspaso_calidad") {
           if (!fromQuality.value || !toQuality.value) {
             msg.appendChild(notice("error", "Traspaso requiere De calidad y A calidad."));
@@ -818,25 +857,40 @@ async function pageCapture() {
           }
         }
 
-        const movementId = crypto.randomUUID();
-          const userId = state.session?.user?.id;
-          if (!userId) {
+        const userId = state.session?.user?.id;
+        if (!userId) {
           msg.appendChild(notice("error", "Falta el user id de la sesion."));
           return;
         }
 
+        const setSubmitting = (on) => {
+          isSubmitting = on;
+          submitBtn.disabled = on;
+          submitBtn.textContent = on ? "Guardando..." : "Guardar movimiento";
+        };
+
+        setSubmitting(true);
+        msg.replaceChildren(notice("warn", "Guardando movimiento..."));
+
+        let movementId = "";
         const uploaded = [];
         try {
+          movementId = crypto.randomUUID();
+
           // 1) Upload proofs first (so we can fail fast before writing to DB).
           for (let i = 0; i < files.length; i++) {
             const f = files[i];
             const safe = sanitizeFilename(f.name);
             const path = `${userId}/${movementId}/${Date.now()}_${i}_${safe}`;
-            const { error: upErr } = await supabase.storage.from("movement-proofs").upload(path, f, {
-              cacheControl: "3600",
-              upsert: false,
-              contentType: f.type || "application/octet-stream",
-            });
+            const { error: upErr } = await withTimeout(
+              supabase.storage.from("movement-proofs").upload(path, f, {
+                cacheControl: "3600",
+                upsert: false,
+                contentType: f.type || "application/octet-stream",
+              }),
+              NETWORK_TIMEOUT_MS,
+              `Subida de evidencia ${i + 1}`
+            );
             if (upErr) throw upErr;
             uploaded.push({
               storage_bucket: "movement-proofs",
@@ -861,10 +915,10 @@ async function pageCapture() {
             to_quality_id: currentMode === "traspaso_calidad" ? String(toQuality.value) : null,
           };
 
-	          const lines = [];
-	          for (const ln of parsed) {
-	            if (currentMode === "entrada") {
-	              lines.push({
+          const lines = [];
+          for (const ln of parsed) {
+            if (currentMode === "entrada") {
+              lines.push({
                 sku_id: ln.sku_id,
                 product_id: ln.product_id,
                 quality_id: ln.quality_id,
@@ -908,82 +962,82 @@ async function pageCapture() {
                 unit_price: null,
                 line_total: null,
               });
-	            } else if (currentMode === "traspaso_calidad") {
-	              const fromQ = String(fromQuality.value);
-	              const toQ = String(toQuality.value);
-	              lines.push({
-	                sku_id: null,
+            } else if (currentMode === "traspaso_calidad") {
+              const fromQ = String(fromQuality.value);
+              const toQ = String(toQuality.value);
+              lines.push({
+                sku_id: null,
                 product_id: ln.product_id,
                 quality_id: fromQ,
                 delta_weight_kg: -ln.weight_kg,
                 boxes: null,
                 price_model: null,
                 unit_price: null,
-	                line_total: null,
-	              });
-	              lines.push({
-	                sku_id: null,
-	                product_id: ln.product_id,
-	                quality_id: toQ,
-	                delta_weight_kg: ln.weight_kg,
-	                boxes: null,
-	                price_model: null,
-	                unit_price: null,
-	                line_total: null,
-	              });
-	            } else if (currentMode === "traspaso_sku") {
-	              lines.push({
-	                sku_id: fromSkuObj.id,
-	                product_id: fromSkuObj.product_id,
-	                quality_id: fromSkuObj.quality_id,
-	                delta_weight_kg: -ln.weight_kg,
-	                boxes: null,
-	                price_model: null,
-	                unit_price: null,
-	                line_total: null,
-	              });
-	              lines.push({
-	                sku_id: toSkuObj.id,
-	                product_id: toSkuObj.product_id,
-	                quality_id: toSkuObj.quality_id,
-	                delta_weight_kg: ln.weight_kg,
-	                boxes: null,
-	                price_model: null,
-	                unit_price: null,
-	                line_total: null,
-	              });
-	            }
-	          }
+                line_total: null,
+              });
+              lines.push({
+                sku_id: null,
+                product_id: ln.product_id,
+                quality_id: toQ,
+                delta_weight_kg: ln.weight_kg,
+                boxes: null,
+                price_model: null,
+                unit_price: null,
+                line_total: null,
+              });
+            } else if (currentMode === "traspaso_sku") {
+              lines.push({
+                sku_id: fromSkuObj.id,
+                product_id: fromSkuObj.product_id,
+                quality_id: fromSkuObj.quality_id,
+                delta_weight_kg: -ln.weight_kg,
+                boxes: null,
+                price_model: null,
+                unit_price: null,
+                line_total: null,
+              });
+              lines.push({
+                sku_id: toSkuObj.id,
+                product_id: toSkuObj.product_id,
+                quality_id: toSkuObj.quality_id,
+                delta_weight_kg: ln.weight_kg,
+                boxes: null,
+                price_model: null,
+                unit_price: null,
+                line_total: null,
+              });
+            }
+          }
 
           // 3) Single RPC to keep DB consistent.
-          const { data: newId, error: rpcErr } = await supabase.rpc("create_movement_with_lines", {
-            movement,
-            lines,
-            attachments: uploaded,
-          });
+          const { data: newId, error: rpcErr } = await withTimeout(
+            supabase.rpc("create_movement_with_lines", {
+              movement,
+              lines,
+              attachments: uploaded,
+            }),
+            NETWORK_TIMEOUT_MS,
+            "Guardado de movimiento"
+          );
           if (rpcErr) throw rpcErr;
 
-          msg.appendChild(notice("ok", `Movimiento guardado ${String(newId).slice(0, 8)}...`));
-
-          // Reset most inputs (file inputs cannot be programmatically set reliably).
-          notes.value = "";
-          proofs.value = "";
-          if (lockOccurredAt.checked) {
-            storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
-          } else {
-            occurredAt.value = localNowInputValue();
-          }
-	          reportedBy.value = "";
-	          fromQuality.value = "";
-	          toQuality.value = "";
-	          fromSku.value = "";
-	          toSku.value = "";
-	          adjustDir.value = "decrease";
-	          linesWrap.replaceChildren();
-	          lineRows.length = 0;
-	          addLine();
-          updateMode(currentMode);
+          msg.replaceChildren(notice("ok", `Movimiento guardado ${String(newId).slice(0, 8)}...`));
+          resetCaptureFormAfterSave();
         } catch (e) {
+          // If timeout happened but insert actually reached DB, avoid duplicate capture on retry.
+          if (movementId) {
+            try {
+              const { data: existing } = await supabase.from("movements").select("id").eq("id", movementId).maybeSingle();
+              if (existing?.id) {
+                msg.replaceChildren(notice("ok", `Movimiento guardado ${String(existing.id).slice(0, 8)}...`));
+                resetCaptureFormAfterSave();
+                return;
+              }
+            } catch {
+              // ignore check failures
+            }
+          }
+
           // Best-effort rollback of uploaded objects if DB write failed.
           if (uploaded.length > 0) {
             try {
@@ -992,7 +1046,14 @@ async function pageCapture() {
               // ignore
             }
           }
-          msg.appendChild(notice("error", e?.message ? String(e.message) : "No se pudo guardar el movimiento."));
+          msg.replaceChildren(
+            notice(
+              "error",
+              `${e?.message ? String(e.message) : "No se pudo guardar el movimiento."} Si la red estuvo inestable, espera unos segundos y revisa Movimientos antes de reintentar.`
+            )
+          );
+        } finally {
+          setSubmitting(false);
         }
       },
     },
@@ -2304,6 +2365,41 @@ async function render() {
   navTo("capture");
 }
 
+let renderRunning = false;
+let renderPending = false;
+
+async function safeRender() {
+  if (renderRunning) {
+    renderPending = true;
+    return;
+  }
+  renderRunning = true;
+  try {
+    do {
+      renderPending = false;
+      await render();
+    } while (renderPending);
+  } catch (e) {
+    layout("Error", notice("error", e?.message ? String(e.message) : "La app tuvo un error inesperado."));
+  } finally {
+    renderRunning = false;
+  }
+}
+
+let lastResumeRefreshAt = 0;
+async function refreshAfterResume() {
+  const now = Date.now();
+  if (now - lastResumeRefreshAt < 3000) return;
+  lastResumeRefreshAt = now;
+  try {
+    await loadSession();
+    state.masterLoaded = false;
+  } catch {
+    // ignore; safeRender will show auth error if needed
+  }
+  await safeRender();
+}
+
 // Boot
 try {
   await loadSession();
@@ -2315,10 +2411,15 @@ supabase.auth.onAuthStateChange(async (_event, session) => {
   state.session = session;
   state.masterLoaded = false;
   if (!session) navTo("login");
-  await render();
+  await safeRender();
 });
 
-window.addEventListener("hashchange", () => render());
+window.addEventListener("hashchange", () => safeRender());
+window.addEventListener("online", () => safeRender());
+window.addEventListener("focus", () => refreshAfterResume());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshAfterResume();
+});
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -2326,4 +2427,4 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-await render();
+await safeRender();
