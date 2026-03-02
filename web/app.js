@@ -1,4 +1,4 @@
-import { DEFAULT_CURRENCY } from "./config.js";
+import { APP_VERSION, DEFAULT_CURRENCY } from "./config.js";
 import { supabase } from "./supabaseClient.js";
 
 const $root = document.getElementById("root");
@@ -255,11 +255,10 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
         h("div", { class: "brand-title", text: "Produce Inventory" }),
         h("div", { class: "brand-sub", text: pageTitle }),
       ]),
-      state.session
-        ? h("div", { class: "brand-sub right" }, [
-            h("div", { class: "mono", text: state.session.user.email || "" }),
-          ])
-        : h("div", { class: "brand-sub right", text: "" }),
+      h("div", { class: "topbar-meta right" }, [
+        state.session ? h("div", { class: "brand-sub mono", text: state.session.user.email || "" }) : h("div", { class: "brand-sub", text: "" }),
+        h("div", { class: "app-version mono", text: `Build ${APP_VERSION}` }),
+      ]),
     ]),
   ]);
 
@@ -2278,6 +2277,7 @@ async function pageSettings() {
   const page = h("div", { class: "col" }, [
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: "Ajustes" }),
+      h("div", { class: "muted mono", text: `Version actual: ${APP_VERSION}` }),
       msg,
       h("div", { class: "row-wrap" }, [signOutBtn]),
     ]),
