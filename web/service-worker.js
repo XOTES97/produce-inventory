@@ -1,12 +1,12 @@
 // Network-first so app updates deploy cleanly (offline support is best-effort).
-const CACHE_NAME = "produce-inventory-pwa-v6";
+const CACHE_NAME = "produce-inventory-pwa-v7";
 const PRECACHE = [
   "./",
   "./index.html",
   "./styles.css",
-  "./app.js",
-  "./config.js",
-  "./supabaseClient.js",
+  "./app.js?v=2026.03.07.6",
+  "./config.js?v=2026.03.07.6",
+  "./supabaseClient.js?v=2026.03.07.6",
   "./manifest.webmanifest",
   "./icons/icon.svg",
   "./icons/fst-logo.png",
