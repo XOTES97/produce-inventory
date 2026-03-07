@@ -14,6 +14,21 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="./app.js"></script>
+    <script>
+      window.addEventListener("error", function (event) {
+        var root = document.getElementById("root");
+        if (!root || root.childElementCount) return;
+        var box = document.createElement("div");
+        box.style.maxWidth = "980px";
+        box.style.margin = "24px auto";
+        box.style.padding = "16px";
+        box.style.border = "1px solid rgba(23, 32, 47, 0.12)";
+        box.style.borderRadius = "16px";
+        box.style.background = "rgba(255,255,255,0.96)";
+        box.textContent = "App startup error: " + (event.message || "Unknown error");
+        root.replaceChildren(box);
+      });
+    </script>
+    <script type="module" src="./app.js?v=2026.03.07.8"></script>
   </body>
 </html>

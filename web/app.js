@@ -1,8 +1,8 @@
-import * as cfg from "./config.js";
-import { supabase } from "./supabaseClient.js";
+import * as cfg from "./config.js?v=2026.03.07.8";
+import { supabase } from "./supabaseClient.js?v=2026.03.07.8";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.07.7";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.07.8";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -3989,7 +3989,9 @@ document.addEventListener("visibilitychange", () => {
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (const reg of regs) reg.unregister();
+    }).catch(() => {});
   });
 }
 
