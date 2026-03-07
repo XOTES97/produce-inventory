@@ -1,5 +1,5 @@
 // Network-first so app updates deploy cleanly (offline support is best-effort).
-const CACHE_NAME = "produce-inventory-pwa-v5";
+const CACHE_NAME = "produce-inventory-pwa-v6";
 const PRECACHE = [
   "./",
   "./index.html",
@@ -9,6 +9,8 @@ const PRECACHE = [
   "./supabaseClient.js",
   "./manifest.webmanifest",
   "./icons/icon.svg",
+  "./icons/fst-logo.png",
+  "./icons/fst-app-icon.png",
 ];
 
 self.addEventListener("install", (event) => {
