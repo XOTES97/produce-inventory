@@ -1,10 +1,5 @@
-import * as cfg from "./config.js?v=2026.03.07.6";
-import { supabase } from "./supabaseClient.js?v=2026.03.07.6";
-
-const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.07.6";
-const APP_NAME = cfg.APP_NAME || "FST INV";
-const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
+import { APP_LOGO_URL, APP_NAME, APP_VERSION, DEFAULT_CURRENCY } from "./config.js";
+import { supabase } from "./supabaseClient.js";
 
 const $root = document.getElementById("root");
 
