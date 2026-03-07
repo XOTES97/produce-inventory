@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.07.8";
-import { supabase } from "./supabaseClient.js?v=2026.03.07.8";
+import * as cfg from "./config.js?v=2026.03.07.9";
+import { supabase } from "./supabaseClient.js?v=2026.03.07.9";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.07.8";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.07.9";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1265,8 +1265,8 @@ async function pageCapture() {
       h("div", { class: "h1", text: "Nuevo movimiento" }),
       h("div", { class: "muted", text: "Todo se registra en kg. Evidencia (WhatsApp) opcional." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
-	      msg,
-	      pills.el,
+      msg,
+      pills.el,
       h("div", { class: "divider" }),
       h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), field("Empleado", reportedBy)]),
       h(
@@ -1279,18 +1279,17 @@ async function pageCapture() {
         { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
         [aggregateMode, h("span", { text: "Registro agregado del día (lote). Se usa solo si no hubo corte físico." })]
       ),
-      h(
       aggregateNoCutoffRow,
       batchCloseWrap,
       batchHint,
       field("Notas", notes),
       currencySection,
-	      traspasoSection,
-	      traspasoSkuSection,
-	      ajusteSection,
-	      h("div", { class: "divider" }),
-	      h("div", { class: "row-wrap" }, [h("div", { class: "h1", text: "Lineas" }), h("div", { class: "spacer" }), addLineBtn]),
-	      linesWrap,
+      traspasoSection,
+      traspasoSkuSection,
+      ajusteSection,
+      h("div", { class: "divider" }),
+      h("div", { class: "row-wrap" }, [h("div", { class: "h1", text: "Lineas" }), h("div", { class: "spacer" }), addLineBtn]),
+      linesWrap,
       h("div", { class: "divider" }),
       field("Evidencia (fotos)", proofs),
       proofsHint,
@@ -3966,33 +3965,36 @@ async function refreshAfterResume() {
   await safeRender();
 }
 
-// Boot
-try {
-  await loadSession();
-} catch (e) {
-  layout("Error", notice("error", e?.message ? String(e.message) : "No se pudo cargar la sesion."));
-}
+async function boot() {
+  try {
+    await loadSession();
+  } catch (e) {
+    layout("Error", notice("error", e?.message ? String(e.message) : "No se pudo cargar la sesion."));
+  }
 
-supabase.auth.onAuthStateChange(async (_event, session) => {
-  state.session = session;
-  state.masterLoaded = false;
-  if (!session) navTo("login");
-  await safeRender();
-});
-
-window.addEventListener("hashchange", () => safeRender());
-window.addEventListener("online", () => safeRender());
-window.addEventListener("focus", () => refreshAfterResume());
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") refreshAfterResume();
-});
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.getRegistrations().then((regs) => {
-      for (const reg of regs) reg.unregister();
-    }).catch(() => {});
+  supabase.auth.onAuthStateChange(async (_event, session) => {
+    state.session = session;
+    state.masterLoaded = false;
+    if (!session) navTo("login");
+    await safeRender();
   });
+
+  window.addEventListener("hashchange", () => safeRender());
+  window.addEventListener("online", () => safeRender());
+  window.addEventListener("focus", () => refreshAfterResume());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshAfterResume();
+  });
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        for (const reg of regs) reg.unregister();
+      }).catch(() => {});
+    });
+  }
+
+  await safeRender();
 }
 
-await safeRender();
+boot();
