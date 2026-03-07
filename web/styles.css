@@ -1,26 +1,22 @@
 :root {
-  --bg0: #f4f7fb;
-  --bg1: #e8eef7;
-  --bg2: #f8fbff;
-  --card: rgba(255, 255, 255, 0.96);
-  --surface: rgba(255, 255, 255, 0.84);
-  --text: #17202f;
-  --muted: rgba(23, 32, 47, 0.68);
-  --line: rgba(23, 32, 47, 0.12);
+  --bg0: #fbf7ee;
+  --bg1: #f2ead7;
+  --card: rgba(255, 255, 255, 0.78);
+  --text: #1a1a17;
+  --muted: rgba(26, 26, 23, 0.68);
+  --line: rgba(26, 26, 23, 0.12);
   --green: #1d6b3a;
   --green2: #0f4f2b;
   --red: #b3292f;
   --amber: #b37a00;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.10);
-  --shadow-soft: 0 8px 24px rgba(23, 32, 47, 0.08);
-  --accent: linear-gradient(135deg, #1d6b3a, #2e8f52);
 
   --radius: 18px;
   --radius2: 12px;
   --pad: 16px;
   --pad2: 12px;
 
-  --font: "Inter", "Segoe UI", "Avenir Next", Avenir, "Futura", "Trebuchet MS", "Segoe UI", sans-serif;
+  --font: ui-sans-serif, "Avenir Next", Avenir, "Futura", "Trebuchet MS", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
 }
 
@@ -31,8 +27,10 @@ body {
   color: var(--text);
   font-family: var(--font);
   background:
-    radial-gradient(circle at 20% 8%, #eaf0fb 0%, transparent 45%),
-    linear-gradient(180deg, var(--bg0), var(--bg1) 65%, var(--bg2));
+    radial-gradient(1200px 800px at 10% -10%, rgba(29, 107, 58, 0.18), transparent 55%),
+    radial-gradient(900px 600px at 110% 10%, rgba(179, 41, 47, 0.14), transparent 50%),
+    radial-gradient(700px 500px at 60% 110%, rgba(179, 122, 0, 0.14), transparent 55%),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
 }
 
 a { color: inherit; text-decoration: none; }
@@ -48,35 +46,16 @@ a { color: inherit; text-decoration: none; }
   top: 0;
   z-index: 10;
   backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(251, 247, 238, 0.6);
   border-bottom: 1px solid var(--line);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
-}
-
-.topbar-logo {
-  width: 56px;
-  height: 56px;
-  border-radius: 0;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  box-shadow: none;
-  object-fit: contain;
-  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.12));
-}
-
-.brand-block {
-  display: flex;
-  align-items: center;
-  gap: 12px;
 }
 
 .topbar-inner {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 14px;
-  padding: 12px 16px 11px 16px;
+  gap: 12px;
+  padding: 14px 16px 12px 16px;
   max-width: 980px;
   margin: 0 auto;
 }
@@ -124,20 +103,8 @@ a { color: inherit; text-decoration: none; }
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow);
   padding: var(--pad);
-  animation: panelReveal 0.25s ease both;
-}
-
-@keyframes panelReveal {
-  from {
-    opacity: 0.98;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .row { display: flex; gap: 12px; align-items: center; }
@@ -161,19 +128,6 @@ label {
   margin-bottom: 6px;
 }
 
-input, select, textarea {
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
-}
-
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-button:focus-visible {
-  outline: none;
-  border-color: rgba(29, 107, 58, 0.6);
-  box-shadow: 0 0 0 3px rgba(29, 107, 58, 0.15);
-}
-
 input, select, textarea, button {
   font-family: inherit;
   font-size: 14px;
@@ -181,10 +135,10 @@ input, select, textarea, button {
 
 input, select, textarea {
   width: 100%;
-  padding: 11px 12px;
+  padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: rgba(255,255,255,0.94);
+  background: rgba(255,255,255,0.82);
   outline: none;
 }
 
@@ -207,15 +161,12 @@ textarea { min-height: 84px; resize: vertical; }
   border: 1px solid var(--line);
   background: rgba(255,255,255,0.86);
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: 999px;
   cursor: pointer;
   user-select: none;
-  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease;
-  box-shadow: 0 1px 0 rgba(23, 32, 47, 0.05);
 }
 
 .btn:active { transform: translateY(1px); }
-.btn:hover:not([disabled]) { box-shadow: 0 8px 18px rgba(0, 0, 0, 0.08); }
 .btn[disabled] {
   opacity: 0.58;
   cursor: not-allowed;
@@ -224,7 +175,7 @@ textarea { min-height: 84px; resize: vertical; }
 
 .btn-primary {
   border-color: rgba(29, 107, 58, 0.35);
-  background: linear-gradient(180deg, rgba(29, 107, 58, 0.20), rgba(29, 107, 58, 0.06));
+  background: linear-gradient(180deg, rgba(29, 107, 58, 0.18), rgba(29, 107, 58, 0.07));
 }
 .btn-danger {
   border-color: rgba(179, 41, 47, 0.35);
@@ -233,11 +184,6 @@ textarea { min-height: 84px; resize: vertical; }
 .btn-ghost {
   border-color: transparent;
   background: transparent;
-}
-
-.btn.preset-active {
-  border-color: rgba(29, 107, 58, 0.35);
-  background: rgba(29, 107, 58, 0.12);
 }
 
 .pillbar { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -292,18 +238,17 @@ textarea { min-height: 84px; resize: vertical; }
   bottom: 0;
   z-index: 20;
   border-top: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(250, 253, 255, 0.88), rgba(244, 247, 251, 0.94));
+  background: rgba(251, 247, 238, 0.82);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   pointer-events: auto;
-  box-shadow: 0 -8px 30px rgba(23, 32, 47, 0.08);
 }
 
 .bottomnav-inner {
   max-width: 980px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
   padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
 }
@@ -322,7 +267,6 @@ textarea { min-height: 84px; resize: vertical; }
   user-select: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
-  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
 .navbtn .icon { font-size: 16px; line-height: 1; }
@@ -331,11 +275,7 @@ textarea { min-height: 84px; resize: vertical; }
 .navbtn[aria-current="page"] {
   color: var(--text);
   border-color: rgba(29, 107, 58, 0.35);
-  background: linear-gradient(180deg, rgba(29, 107, 58, 0.16), rgba(29, 107, 58, 0.06));
-}
-
-.navbtn:active {
-  transform: translateY(1px);
+  background: rgba(29, 107, 58, 0.10);
 }
 
 .divider {

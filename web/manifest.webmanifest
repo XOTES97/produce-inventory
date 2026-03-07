@@ -1,16 +1,17 @@
 {
-  "name": "FST INV",
-  "short_name": "FST INV",
+  "name": "Produce Inventory",
+  "short_name": "Inventory",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#fbf7ee",
   "theme_color": "#1d6b3a",
   "icons": [
     {
-      "src": "icons/fst-app-icon.png",
-      "sizes": "640x640",
-      "type": "image/png",
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
       "purpose": "any maskable"
     }
   ]
 }
+

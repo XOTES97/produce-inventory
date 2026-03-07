@@ -45,11 +45,6 @@ The system is based on a **movement ledger** (kardex): you never "edit stock". Y
 
 For a real installable PWA on mobile, deploy the `web/` folder to any static host that serves over HTTPS.
 
-## Branding (logo + header)
-- The header logo is configured through `APP_LOGO_URL` in `web/config.js`.
-- The installed app/browser icon is configured in `web/index.html` and `web/manifest.webmanifest`.
-- The app header name comes from `APP_NAME` in `web/config.js`; the version label is shown as `APP_VERSION`.
-
 ## First Run
 1. Sign in.
 2. Go to `Ajustes` and click `Cargar SKUs base` to create starter:
@@ -58,18 +53,3 @@ For a real installable PWA on mobile, deploy the `web/` folder to any static hos
    - SKUs (codes + mapping)
 3. (Optional) Add `Empleados` to tag who reported a movement.
 4. Start capturing movements in `Capturar`. Proof photos are optional.
-
-## Rollback (safe version control)
-Deployments are independent from your database in Supabase, so rolling back the app does not erase movement data.
-
-### From Cloudflare Pages
-1. Open the Pages project.
-2. Go to **Deployments**.
-3. Find a previous successful deployment and choose **Rollback** (or redeploy that version).
-
-### From Git
-1. Identify the prior version: `git log --oneline -- web` (or `--all`).
-2. Checkout that commit to verify: `git checkout <commit>`.
-3. Push/Deploy from that commit, or create a new branch/tag and merge from there.
-4. Tag releases before big changes:
-   `git tag v2026.03.07.x && git push origin --tags`
