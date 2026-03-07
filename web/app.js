@@ -1,4 +1,4 @@
-import { APP_VERSION, DEFAULT_CURRENCY } from "./config.js";
+import { APP_LOGO_URL, APP_NAME, APP_VERSION, DEFAULT_CURRENCY } from "./config.js";
 import { supabase } from "./supabaseClient.js";
 
 const $root = document.getElementById("root");
@@ -8,6 +8,7 @@ const ROUTE_TITLES = {
   capture: "Capturar",
   movements: "Movimientos",
   inventory: "Inventario",
+  hypothetical: "Hipotetico",
   cutoffs: "Cortes",
   reports: "Reportes",
   settings: "Ajustes",
@@ -17,10 +18,14 @@ const NAV_ITEMS = [
   { route: "capture", label: "Capturar", icon: "+" },
   { route: "movements", label: "Movimientos", icon: "LOG" },
   { route: "inventory", label: "Inventario", icon: "KG" },
+  { route: "hypothetical", label: "Hipotetico", icon: "SIM" },
   { route: "cutoffs", label: "Cortes", icon: "CUT" },
   { route: "reports", label: "Reportes", icon: "REP" },
   { route: "settings", label: "Ajustes", icon: "CFG" },
 ];
+const MOVEMENTS_PAGE_SIZE = 50;
+const UI_YIELD_EVERY = 60;
+const RESUME_REFRESH_MS = 15000;
 
 const state = {
   session: null,
@@ -34,6 +39,11 @@ const state = {
 const STORAGE_KEYS = {
   captureFixedDatetimeLock: "produce_inventory.capture.fixed_datetime_lock",
   captureFixedDatetimeValue: "produce_inventory.capture.fixed_datetime_value",
+  captureBatchMode: "produce_inventory.capture.batch_mode",
+  captureBatchCloseTime: "produce_inventory.capture.batch_close_time",
+  cutoffLineFixedDatetimeLock: "produce_inventory.cutoff_line.fixed_datetime_lock",
+  cutoffLineFixedDatetimeValue: "produce_inventory.cutoff_line.fixed_datetime_value",
+  hypotheticalAdjustments: "produce_inventory.hypothetical.adjustments",
 };
 const NETWORK_TIMEOUT_MS = 45000;
 
@@ -41,6 +51,16 @@ function route() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
   const r = raw.split("?")[0].trim();
   return r || "capture";
+}
+
+function yieldToUI() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function maybeYield(i, every = UI_YIELD_EVERY) {
+  if (!Number.isFinite(i) || i <= 0) return;
+  if (i % every !== 0) return;
+  await yieldToUI();
 }
 
 function navTo(r) {
@@ -61,6 +81,18 @@ function storageSet(key, value) {
     localStorage.setItem(key, String(value));
   } catch {
     // ignore
+  }
+}
+
+function storageGetJson(key, fallback = null) {
+  const raw = storageGet(key, null);
+  if (raw == null) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed == null) return fallback;
+    return parsed;
+  } catch {
+    return fallback;
   }
 }
 
@@ -127,6 +159,29 @@ function localNowInputValue() {
   const hh = pad(d.getHours());
   const mi = pad(d.getMinutes());
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function localDatePartFromInput(dtLocal) {
+  const v = String(dtLocal || "").trim();
+  if (!v) return "";
+  const [datePart] = v.split("T");
+  return datePart || "";
+}
+
+function batchCloseDefaultTime(dtLocal) {
+  const datePart = localDatePartFromInput(dtLocal);
+  const d = datePart ? new Date(`${datePart}T00:00`) : new Date();
+  if (Number.isNaN(d.getTime())) return "16:00";
+  // Mon-Sat 16:00, Sunday 11:45.
+  return d.getDay() === 0 ? "11:45" : "16:00";
+}
+
+function buildBatchOccurredIso(dtLocal, closeTime) {
+  const datePart = localDatePartFromInput(dtLocal);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return null;
+  const rawTime = String(closeTime || "").trim();
+  const timePart = /^\d{2}:\d{2}$/.test(rawTime) ? rawTime : batchCloseDefaultTime(dtLocal);
+  return isoFromLocalInput(`${datePart}T${timePart}`);
 }
 
 function localInputValueFromIso(iso) {
@@ -265,9 +320,16 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
 
   const topbar = h("div", { class: "topbar" }, [
     h("div", { class: "topbar-inner" }, [
-      h("div", { class: "brand" }, [
-        h("div", { class: "brand-title", text: "Produce Inventory" }),
-        h("div", { class: "brand-sub", text: pageTitle }),
+      h("div", { class: "brand-block" }, [
+        h("img", {
+          class: "topbar-logo",
+          src: APP_LOGO_URL,
+          alt: `${APP_NAME} logo`,
+        }),
+        h("div", { class: "brand" }, [
+          h("div", { class: "brand-title", text: APP_NAME }),
+          h("div", { class: "brand-sub", text: pageTitle }),
+        ]),
       ]),
       h("div", { class: "topbar-meta right" }, [
         state.session ? h("div", { class: "brand-sub mono", text: state.session.user.email || "" }) : h("div", { class: "brand-sub", text: "" }),
@@ -283,10 +345,10 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
 
   if (showNav && state.session) {
     const r = route();
-    const nav = h("div", { class: "bottomnav" }, [
-      h(
-        "div",
-        { class: "bottomnav-inner", style: `grid-template-columns: repeat(${NAV_ITEMS.length}, 1fr)` },
+      const nav = h("div", { class: "bottomnav" }, [
+        h(
+          "div",
+          { class: "bottomnav-inner" },
         NAV_ITEMS.map((it) =>
           h(
             "a",
@@ -621,6 +683,76 @@ async function pageCapture() {
   });
   const lockOccurredAt = h("input", { type: "checkbox" });
   lockOccurredAt.checked = fixedDtLockOn;
+  const aggregateMode = h("input", { type: "checkbox" });
+  aggregateMode.checked = storageGet(STORAGE_KEYS.captureBatchMode, "0") === "1";
+  const aggregateCloseTime = h("input", {
+    type: "time",
+    value: storageGet(STORAGE_KEYS.captureBatchCloseTime, batchCloseDefaultTime(occurredAt.value)),
+  });
+  const batchClosePresetWrap = h("div", { class: "col" });
+  const batchClosePresetButtons = [];
+  function setBatchClosePresetState(value) {
+    const normalized = String(value || "").trim();
+    for (const btn of batchClosePresetButtons) {
+      const preset = String(btn.dataset.preset || "").trim();
+      const active = preset && preset === normalized;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      btn.classList.toggle("preset-active", active);
+    }
+  }
+  function setAggregateCloseTime(value, manualOverride = true) {
+    aggregateCloseTime.value = String(value || "").trim();
+    aggregateCloseTimeEdited = manualOverride;
+    storageSet(STORAGE_KEYS.captureBatchCloseTime, String(aggregateCloseTime.value || ""));
+    setBatchClosePresetState(aggregateCloseTime.value);
+  }
+  const batchClosePreset16 = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      "data-preset": "16:00",
+      type: "button",
+      onclick: () => setAggregateCloseTime("16:00"),
+    },
+    ["16:00"]
+  );
+  batchClosePresetButtons.push(batchClosePreset16);
+  const batchClosePreset1145 = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      "data-preset": "11:45",
+      type: "button",
+      onclick: () => setAggregateCloseTime("11:45"),
+    },
+    ["11:45"]
+  );
+  batchClosePresetButtons.push(batchClosePreset1145);
+  const batchClosePresetTodayDefault = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      "data-preset": batchCloseDefaultTime(occurredAt.value),
+      type: "button",
+      onclick: () => setAggregateCloseTime(batchCloseDefaultTime(occurredAt.value), false),
+    },
+    ["Sugerida"]
+  );
+  batchClosePresetButtons.push(batchClosePresetTodayDefault);
+  batchClosePresetWrap.append(
+    h("div", { class: "muted", text: "Atajos de hora de cierre" }),
+    h("div", { class: "row-wrap", style: "margin-top: 6px" }, [batchClosePreset16, batchClosePreset1145, batchClosePresetTodayDefault])
+  );
+  const aggregateNoCutoff = h("input", { type: "checkbox" });
+  const aggregateNoCutoffRow = h(
+    "label",
+    { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
+    [aggregateNoCutoff, h("span", { text: "Confirmo que este movimiento agregado NO incluye periodo de corte físico." })]
+  );
+  const batchCloseWrap = h("div", { class: "col" }, [field("Hora de cierre", aggregateCloseTime), batchClosePresetWrap]);
+  const batchHint = h("div", { class: "muted" }, [
+    "En modo agregado: se registra como un bloque y se marca con [AGREGADO] para rastrear que fue captura consolidada.",
+  ]);
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
   const currency = h("input", { type: "text", value: DEFAULT_CURRENCY, placeholder: "Moneda (MXN)" });
   const reportedBy = h("select", {}, optionList(employees, { includeEmpty: true, emptyLabel: "(Opcional)..." }));
@@ -745,17 +877,50 @@ async function pageCapture() {
   traspasoSkuSection.style.display = "none";
   ajusteSection.style.display = "none";
 
-	  fromSku.addEventListener("change", () => applyTraspasoSkuBucket());
-	  fromSku.addEventListener("change", () => updateTraspasoSkuMeta());
-	  toSku.addEventListener("change", () => updateTraspasoSkuMeta());
+  fromSku.addEventListener("change", () => applyTraspasoSkuBucket());
+  fromSku.addEventListener("change", () => updateTraspasoSkuMeta());
+  toSku.addEventListener("change", () => updateTraspasoSkuMeta());
+  let aggregateCloseTimeEdited = false;
   occurredAt.addEventListener("change", () => {
     if (lockOccurredAt.checked) storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    if (aggregateMode.checked && !aggregateCloseTimeEdited) {
+      const suggested = batchCloseDefaultTime(occurredAt.value);
+      batchClosePresetTodayDefault.dataset.preset = suggested;
+      setAggregateCloseTime(suggested, false);
+    }
+  });
+  aggregateCloseTime.addEventListener("change", () => {
+    aggregateCloseTimeEdited = true;
+    storageSet(STORAGE_KEYS.captureBatchCloseTime, String(aggregateCloseTime.value || ""));
+    setBatchClosePresetState(aggregateCloseTime.value);
   });
   lockOccurredAt.addEventListener("change", () => {
     storageSet(STORAGE_KEYS.captureFixedDatetimeLock, lockOccurredAt.checked ? "1" : "0");
     if (lockOccurredAt.checked) {
       if (!occurredAt.value) occurredAt.value = localNowInputValue();
       storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    }
+  });
+  setBatchClosePresetState(aggregateCloseTime.value);
+  aggregateCloseTime.disabled = !aggregateMode.checked;
+  batchCloseWrap.style.display = aggregateMode.checked ? "" : "none";
+  batchHint.style.display = aggregateMode.checked ? "" : "none";
+  aggregateNoCutoff.disabled = !aggregateMode.checked;
+  aggregateNoCutoffRow.style.display = aggregateMode.checked ? "" : "none";
+  aggregateNoCutoff.checked = false;
+  aggregateMode.addEventListener("change", () => {
+    storageSet(STORAGE_KEYS.captureBatchMode, aggregateMode.checked ? "1" : "0");
+    batchCloseWrap.style.display = aggregateMode.checked ? "" : "none";
+    batchHint.style.display = aggregateMode.checked ? "" : "none";
+    aggregateCloseTime.disabled = !aggregateMode.checked;
+    aggregateNoCutoff.disabled = !aggregateMode.checked;
+    aggregateNoCutoffRow.style.display = aggregateMode.checked ? "" : "none";
+    aggregateCloseTimeEdited = false;
+    aggregateNoCutoff.checked = false;
+    if (aggregateMode.checked) {
+      const suggested = batchCloseDefaultTime(occurredAt.value);
+      batchClosePresetTodayDefault.dataset.preset = suggested;
+      setAggregateCloseTime(suggested, false);
     }
   });
 
@@ -773,6 +938,7 @@ async function pageCapture() {
     fromSku.value = "";
     toSku.value = "";
     adjustDir.value = "decrease";
+    aggregateNoCutoff.checked = false;
     linesWrap.replaceChildren();
     lineRows.length = 0;
     addLine();
@@ -794,11 +960,27 @@ async function pageCapture() {
           return;
         }
 
-        const dtIso = isoFromLocalInput(String(occurredAt.value || ""));
+        const dtInputValue = String(occurredAt.value || "");
+        const dtIso = isoFromLocalInput(dtInputValue);
         if (!dtIso) {
           msg.appendChild(notice("error", "Fecha/hora invalida."));
           return;
         }
+        const isAggregateMode = aggregateMode.checked;
+        const aggregateDtIso = isAggregateMode ? buildBatchOccurredIso(dtInputValue, aggregateCloseTime.value) : null;
+        if (isAggregateMode && !aggregateDtIso) {
+          msg.appendChild(notice("error", "Hora de cierre invalida para el registro agregado."));
+          return;
+        }
+        if (isAggregateMode && !aggregateNoCutoff.checked) {
+          msg.appendChild(notice("error", "Confirma que este registro no se hizo dentro de una toma física de inventario activa."));
+          return;
+        }
+        const noteBase = String(notes.value || "").trim();
+        const closeTime = isAggregateMode ? String(aggregateCloseTime.value || batchCloseDefaultTime(dtInputValue)) : "";
+        const isMarked = noteBase.toUpperCase().includes("[AGREGADO]");
+        const aggregateSuffix = isAggregateMode && !isMarked ? ` [AGREGADO] registrado al cierre ${closeTime}` : "";
+        const finalNotes = isAggregateMode ? `${noteBase}${aggregateSuffix}`.trim() : noteBase;
 
         const files = Array.from(proofs.files || []);
         const rawLines = lineRows.map((r) => r.get());
@@ -918,8 +1100,8 @@ async function pageCapture() {
           const movement = {
             id: movementId,
             movement_type: currentMode,
-            occurred_at: dtIso,
-            notes: String(notes.value || "").trim() || null,
+            occurred_at: isAggregateMode ? aggregateDtIso : dtIso,
+            notes: finalNotes || null,
             currency: currentMode === "venta" ? String(currency.value || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY : DEFAULT_CURRENCY,
             reported_by_employee_id: String(reportedBy.value || "") || null,
             from_sku_id: currentMode === "traspaso_sku" ? fromSkuId : null,
@@ -1080,15 +1262,24 @@ async function pageCapture() {
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
 	      msg,
 	      pills.el,
-	      h("div", { class: "divider" }),
-	      h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), field("Empleado", reportedBy)]),
+      h("div", { class: "divider" }),
+      h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), field("Empleado", reportedBy)]),
       h(
         "label",
         { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
         [lockOccurredAt, h("span", { text: "Mantener fecha/hora fija despues de guardar." })]
       ),
-	      field("Notas", notes),
-	      currencySection,
+      h(
+        "label",
+        { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
+        [aggregateMode, h("span", { text: "Registro agregado del día (lote). Se usa solo si no hubo corte físico." })]
+      ),
+      h(
+      aggregateNoCutoffRow,
+      batchCloseWrap,
+      batchHint,
+      field("Notas", notes),
+      currencySection,
 	      traspasoSection,
 	      traspasoSkuSection,
 	      ajusteSection,
@@ -1114,110 +1305,157 @@ async function pageCapture() {
 async function pageMovements() {
   const msg = h("div");
   const listWrap = h("div", { class: "col" });
+  let movementsOffset = 0;
+  let isLoadingMovements = false;
+  let canLoadMoreMovements = false;
 
-  async function load() {
-    msg.replaceChildren(notice("warn", "Cargando..."));
-	    const { data, error } = await supabase
-	      .from("movements")
-	      .select(
-	        "id,movement_type,occurred_at,notes,currency,reported_by_employee_id,from_sku_id,to_sku_id,from_quality_id,to_quality_id,created_at," +
-	          "movement_lines(id,sku_id,product_id,quality_id,delta_weight_kg,boxes,price_model,unit_price,line_total)," +
-	          "movement_attachments(id,storage_path,original_filename,content_type,size_bytes)"
-	      )
-	      .order("occurred_at", { ascending: false })
-      .limit(50);
-    if (error) {
-      msg.replaceChildren(notice("error", error.message));
-      return;
+  const loadMoreBtn = h("button", { class: "btn", type: "button", onclick: () => load({ append: true }) }, ["Cargar más movimientos"]);
+  const refreshBtn = h("button", {
+    class: "btn",
+    type: "button",
+    onclick: async () => {
+      movementsOffset = 0;
+      await load();
+    },
+  }, ["Actualizar"]);
+
+  async function load({ append = false } = {}) {
+    if (isLoadingMovements) return;
+    isLoadingMovements = true;
+    loadMoreBtn.disabled = true;
+    if (!append) canLoadMoreMovements = false;
+
+    if (!append) {
+      movementsOffset = 0;
+      listWrap.replaceChildren(notice("warn", "Cargando..."));
     }
-    msg.replaceChildren();
-    listWrap.replaceChildren();
+    msg.replaceChildren(notice("warn", append ? "Cargando más movimientos..." : "Cargando movimientos..."));
 
-    for (const m of data || []) {
-      const lines = m.movement_lines || [];
-      const att = m.movement_attachments || [];
-
-	      const sumDelta = lines.reduce((acc, l) => acc + Number(l.delta_weight_kg || 0), 0);
-	      const sumAbs = lines.reduce((acc, l) => acc + Math.abs(Number(l.delta_weight_kg || 0)), 0);
-	      const isTransfer = m.movement_type === "traspaso_calidad" || m.movement_type === "traspaso_sku";
-	      const kgLabel =
-	        isTransfer
-	          ? `${fmtKg(sumAbs / 2)} kg movidos`
-	          : `${fmtKg(Math.abs(sumDelta))} kg`;
-
-      const title = `${movementLabel(m.movement_type)} - ${kgLabel}`;
-      const subtitleParts = [
-        formatOccurredAt(m.occurred_at),
-        m.reported_by_employee_id ? employeeName(m.reported_by_employee_id) : null,
-        att.length ? `${att.length} evidencia(s)` : "sin evidencia",
-      ];
-      // Remove null entries
-      for (let i = subtitleParts.length - 1; i >= 0; i--) {
-        if (!subtitleParts[i]) subtitleParts.splice(i, 1);
+    try {
+      const { data, error } = await supabase
+        .from("movements")
+        .select(
+          "id,movement_type,occurred_at,notes,currency,reported_by_employee_id,from_sku_id,to_sku_id,from_quality_id,to_quality_id,created_at," +
+            "movement_lines(id,sku_id,product_id,quality_id,delta_weight_kg,boxes,price_model,unit_price,line_total)," +
+            "movement_attachments(id,storage_path,original_filename,content_type,size_bytes)"
+        )
+        .order("occurred_at", { ascending: false })
+        .range(movementsOffset, movementsOffset + MOVEMENTS_PAGE_SIZE - 1);
+      if (error) {
+        msg.replaceChildren(notice("error", error.message));
+        return;
       }
-	      if (m.movement_type === "traspaso_calidad" && m.from_quality_id && m.to_quality_id) {
-	        subtitleParts.push(`${qualityName(m.from_quality_id)} -> ${qualityName(m.to_quality_id)}`);
-	      }
-	      if (m.movement_type === "traspaso_sku" && m.from_sku_id && m.to_sku_id) {
-	        subtitleParts.push(`${skuLabel(m.from_sku_id)} -> ${skuLabel(m.to_sku_id)}`);
-	      }
-	      const subtitle = subtitleParts.join(" | ");
 
-      const btnView = h(
-        "button",
-        {
-          class: "btn",
-          type: "button",
-          onclick: () => openMovementModal(m),
-        },
-        ["Ver"]
-      );
+      const movementRows = data || [];
+      canLoadMoreMovements = movementRows.length >= MOVEMENTS_PAGE_SIZE;
+      movementsOffset += movementRows.length;
 
-      const card = h("div", { class: "card col" }, [
-        h("div", { class: "row" }, [
-          h("div", { class: "col", style: "gap: 4px" }, [
-            h("div", { style: "font-weight: 760", text: title }),
-            h("div", { class: "muted", text: subtitle }),
+      if (!append) listWrap.replaceChildren();
+
+      if (movementRows.length === 0 && !append) {
+        listWrap.appendChild(notice("warn", "Sin movimientos."));
+      }
+
+      for (let idx = 0; idx < movementRows.length; idx++) {
+        const m = movementRows[idx];
+        const lines = m.movement_lines || [];
+        const att = m.movement_attachments || [];
+
+        const sumDelta = lines.reduce((acc, l) => acc + Number(l.delta_weight_kg || 0), 0);
+        const sumAbs = lines.reduce((acc, l) => acc + Math.abs(Number(l.delta_weight_kg || 0)), 0);
+        const isTransfer = m.movement_type === "traspaso_calidad" || m.movement_type === "traspaso_sku";
+        const kgLabel = isTransfer ? `${fmtKg(sumAbs / 2)} kg movidos` : `${fmtKg(Math.abs(sumDelta))} kg`;
+
+        const title = `${movementLabel(m.movement_type)} - ${kgLabel}`;
+        const subtitleParts = [
+          formatOccurredAt(m.occurred_at),
+          m.reported_by_employee_id ? employeeName(m.reported_by_employee_id) : null,
+          att.length ? `${att.length} evidencia(s)` : "sin evidencia",
+        ];
+        // Remove null entries
+        for (let i = subtitleParts.length - 1; i >= 0; i--) {
+          if (!subtitleParts[i]) subtitleParts.splice(i, 1);
+        }
+        if (m.movement_type === "traspaso_calidad" && m.from_quality_id && m.to_quality_id) {
+          subtitleParts.push(`${qualityName(m.from_quality_id)} -> ${qualityName(m.to_quality_id)}`);
+        }
+        if (m.movement_type === "traspaso_sku" && m.from_sku_id && m.to_sku_id) {
+          subtitleParts.push(`${skuLabel(m.from_sku_id)} -> ${skuLabel(m.to_sku_id)}`);
+        }
+        const subtitle = subtitleParts.join(" | ");
+
+        const btnView = h(
+          "button",
+          {
+            class: "btn",
+            type: "button",
+            onclick: () => openMovementModal(m),
+          },
+          ["Ver"]
+        );
+
+        const card = h("div", { class: "card col" }, [
+          h("div", { class: "row" }, [
+            h("div", { class: "col", style: "gap: 4px" }, [
+              h("div", { style: "font-weight: 760", text: title }),
+              h("div", { class: "muted", text: subtitle }),
+            ]),
+            h("div", { class: "spacer" }),
+            btnView,
           ]),
-          h("div", { class: "spacer" }),
-          btnView,
-        ]),
-        m.notes ? h("div", { class: "muted", text: m.notes }) : null,
-        lines.length
-          ? h("div", { class: "movement-lines-preview col" }, [
-              ...lines.map((l) => {
-                const skuText =
-                  skuLabel(l.sku_id) ||
-                  `${productName(l.product_id)} | ${qualityName(l.quality_id)}`;
-                const d = Number(l.delta_weight_kg || 0);
-                const kg = `${d >= 0 ? "+" : "-"}${fmtKg(Math.abs(d))} kg`;
-                const pieces = [kg];
-                if (l.boxes != null) pieces.push(`${Number(l.boxes || 0)} cajas`);
-                if (m.movement_type === "venta" && l.line_total != null) {
-                  pieces.push(fmtMoney(Number(l.line_total || 0), m.currency || DEFAULT_CURRENCY));
-                }
-                return h("div", { class: "movement-line-item" }, [
-                  h("div", { class: "mono movement-line-sku", text: skuText }),
-                  h("div", { class: "spacer" }),
-                  h("div", { class: "mono movement-line-qty", text: pieces.join(" | ") }),
-                ]);
-              }),
-            ])
-          : null,
-      ]);
-      listWrap.appendChild(card);
+          m.notes ? h("div", { class: "muted", text: m.notes }) : null,
+          lines.length
+            ? h("div", { class: "movement-lines-preview col" }, [
+                ...lines.map((l) => {
+                  const skuText = skuLabel(l.sku_id) || `${productName(l.product_id)} | ${qualityName(l.quality_id)}`;
+                  const d = Number(l.delta_weight_kg || 0);
+                  const kg = `${d >= 0 ? "+" : "-"}${fmtKg(Math.abs(d))} kg`;
+                  const pieces = [kg];
+                  if (l.boxes != null) pieces.push(`${Number(l.boxes || 0)} cajas`);
+                  if (m.movement_type === "venta" && l.line_total != null) {
+                    pieces.push(fmtMoney(Number(l.line_total || 0), m.currency || DEFAULT_CURRENCY));
+                  }
+                  return h("div", { class: "movement-line-item" }, [
+                    h("div", { class: "mono movement-line-sku", text: skuText }),
+                    h("div", { class: "spacer" }),
+                    h("div", { class: "mono movement-line-qty", text: pieces.join(" | ") }),
+                  ]);
+                }),
+              ])
+            : null,
+        ]);
+        listWrap.appendChild(card);
+        await maybeYield(idx + 1, 10);
+      }
+
+      msg.replaceChildren();
+      if (!canLoadMoreMovements) {
+        loadMoreBtn.textContent = "Sin más movimientos";
+        loadMoreBtn.disabled = true;
+      } else {
+        loadMoreBtn.textContent = "Cargar más movimientos";
+        loadMoreBtn.disabled = false;
+      }
+    } finally {
+      isLoadingMovements = false;
+      if (!canLoadMoreMovements) {
+        loadMoreBtn.textContent = "Sin más movimientos";
+        loadMoreBtn.disabled = true;
+      } else {
+        loadMoreBtn.textContent = "Cargar más movimientos";
+        loadMoreBtn.disabled = false;
+      }
     }
   }
 
-  const refreshBtn = h("button", { class: "btn", type: "button", onclick: load }, ["Actualizar"]);
   const top = h("div", { class: "card col" }, [
     h("div", { class: "row-wrap" }, [h("div", { class: "h1", text: "Movimientos recientes" }), h("div", { class: "spacer" }), refreshBtn]),
     msg,
+    h("div", { class: "row-wrap" }, [loadMoreBtn]),
   ]);
 
   const page = h("div", { class: "col" }, [top, listWrap]);
   layout(ROUTE_TITLES.movements, page);
-
   await load();
 }
 
@@ -1568,6 +1806,219 @@ async function pageInventory() {
   await load();
 }
 
+async function pageHypothetical() {
+  const msg = h("div");
+  const summaryWrap = h("div", { class: "col" });
+  const tableWrap = h("div", { class: "card col" });
+  const bucketToAdjustment = storageGetJson(STORAGE_KEYS.hypotheticalAdjustments, {}) || {};
+  let invMap = new Map(); // key: `${productId}|${qualityId}` -> kg
+  let rows = [];
+
+  function bucketKey(productId, qualityId) {
+    return `${String(productId)}|${String(qualityId)}`;
+  }
+
+  function choosePrimarySku(list) {
+    const sk = (list || []).filter(Boolean);
+    if (sk.length === 0) return null;
+    const perKg = sk.filter((s) => String(s.default_price_model || "") === "per_kg");
+    const candidates = (perKg.length ? perKg : sk).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+    return candidates[0] || sk[0] || null;
+  }
+
+  function saveAdjustments() {
+    storageSet(STORAGE_KEYS.hypotheticalAdjustments, JSON.stringify(bucketToAdjustment));
+  }
+
+  function parseAdjust(v) {
+    const n = Number(String(v || "").trim());
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function getBuckets() {
+    const skus = (state.skus || []).filter((s) => s.is_active).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+    const groups = new Map(); // key -> { product_id, quality_id, skus: [] }
+
+    for (const s of skus) {
+      const key = bucketKey(s.product_id, s.quality_id);
+      if (!groups.has(key)) groups.set(key, { key, product_id: s.product_id, quality_id: s.quality_id, skus: [] });
+      groups.get(key).skus.push(s);
+    }
+
+    for (const key of invMap.keys()) {
+      if (!groups.has(key)) {
+        const [pid, qid] = String(key).split("|");
+        groups.set(key, { key, product_id: pid, quality_id: qid, skus: [] });
+      }
+    }
+
+    return Array.from(groups.values())
+      .map((g) => {
+        const skList = (g.skus || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+        const primary = choosePrimarySku(skList);
+        const linked = primary ? skList.filter((s) => s.id !== primary.id) : skList;
+        const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
+        const onHand = Number(invMap.get(g.key) || 0);
+        const storedAdj = Number(bucketToAdjustment[g.key]);
+        const adjust = Number.isFinite(storedAdj) ? storedAdj : 0;
+        const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
+        const sortLabel = primary ? String(primary.name || "") : `${productName(g.product_id)} | ${qualityName(g.quality_id)}`;
+        return {
+          ...g,
+          codes,
+          primary,
+          linked,
+          onHand,
+          adjust,
+          sortCode,
+          sortLabel,
+        };
+      })
+      .sort((a, b) => (a.sortCode - b.sortCode) || String(a.sortLabel).localeCompare(String(b.sortLabel)));
+  }
+
+  function updateSummary() {
+    let totalActual = 0;
+    let totalAdjustment = 0;
+    let totalHypothetical = 0;
+
+    for (const r of rows) {
+      totalActual += Number(r.onHand || 0);
+      totalAdjustment += Number(r.adjust || 0);
+      totalHypothetical += Number(r.onHand || 0) + Number(r.adjust || 0);
+    }
+
+    summaryWrap.replaceChildren(
+      h("div", { class: "card col" }, [
+        h("div", { class: "h1", text: "Resumen hipotetico" }),
+        h("div", { class: "muted", text: "Nota: estos valores son escenario y NO se aplican al inventario real." }),
+        h("div", { class: "grid2" }, [
+          h("div", { class: "notice" }, [h("div", { class: "muted", text: "Inventario base total (kg)" }), h("div", { class: "mono", text: fmtKg(totalActual) })]),
+          h("div", { class: "notice" }, [h("div", { class: "muted", text: "Ajuste total (kg)" }), h("div", { class: "mono", text: fmtKg(totalAdjustment) })]),
+          h("div", { class: "notice" }, [h("div", { class: "muted", text: "Inventario hipotetico total (kg)" }), h("div", { class: "mono", text: fmtKg(totalHypothetical) })]),
+        ]),
+      ])
+    );
+  }
+
+  function renderTable() {
+    const hdr = h("thead", {}, [
+      h("tr", {}, [
+        h("th", { text: "SKU(s)" }),
+        h("th", { text: "Descripcion" }),
+        h("th", { text: "Inventario real (kg)" }),
+        h("th", { text: "Ajuste/escenario (kg)" }),
+        h("th", { text: "Inventario hipotetico (kg)" }),
+      ]),
+    ]);
+
+    const bodyRows = rows.map((r) => {
+      const desc = r.primary
+        ? [
+            h("div", { text: `${Number(r.primary.code)} ${String(r.primary.name)}` }),
+            r.linked && r.linked.length
+              ? h("div", { class: "muted", text: `Vinculados: ${r.linked.map((s) => `${Number(s.code)} ${String(s.name)}`).join(", ")}` })
+              : null,
+          ]
+        : [h("div", { class: "muted", text: `${productName(r.product_id)} | ${qualityName(r.quality_id)}` })];
+
+      const input = h("input", {
+        type: "number",
+        step: "0.001",
+        value: String(Number(r.adjust || 0)),
+      });
+      const hypoCell = h("div", { class: "mono", text: fmtKg(Number(r.onHand || 0) + Number(r.adjust || 0)) });
+
+      input.addEventListener("input", (ev) => {
+        const v = parseAdjust(ev.currentTarget.value);
+        const normalized = Number.isFinite(v) ? v : 0;
+        r.adjust = normalized;
+        bucketToAdjustment[r.key] = normalized;
+        hypoCell.textContent = fmtKg(Number(r.onHand || 0) + normalized);
+        saveAdjustments();
+        updateSummary();
+      });
+
+      return h("tr", {}, [
+        h("td", { class: "mono", text: r.codes || "" }),
+        h("td", {}, desc),
+        h("td", { class: "mono", text: fmtKg(r.onHand) }),
+        h("td", {}, input),
+        h("td", {}, hypoCell),
+      ]);
+    });
+
+    tableWrap.replaceChildren(
+      h("div", { class: "h1", text: "Inventario hipotetico por SKU" }),
+      h("div", { class: "muted", text: "Ajusta por grupo (SKU base + SKU relacionados) para crear una simulacion rapida." }),
+      tableScroll(h("table", { class: "table" }, [hdr, h("tbody", {}, bodyRows)]))
+    );
+  }
+
+  const refreshBtn = h(
+    "button",
+    {
+      class: "btn",
+      type: "button",
+      onclick: () => load(),
+    },
+    ["Actualizar inventario real"]
+  );
+
+  const resetBtn = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      type: "button",
+      onclick: async () => {
+        Object.keys(bucketToAdjustment).forEach((k) => delete bucketToAdjustment[k]);
+        saveAdjustments();
+        await load();
+      },
+    },
+    ["Reiniciar ajuste"]
+  );
+
+  const page = h("div", { class: "col" }, [
+    h("div", { class: "card col" }, [
+      h("div", { class: "row-wrap" }, [
+        h("div", { class: "h1", text: "Inventario Hipotetico" }),
+        h("div", { class: "spacer" }),
+        refreshBtn,
+        resetBtn,
+      ]),
+      h("div", { class: "muted", text: "Se usa para calcular un escenario rapido; no guarda cambios al sistema." }),
+      summaryWrap,
+      msg,
+    ]),
+    tableWrap,
+  ]);
+
+  layout(ROUTE_TITLES.hypothetical, page);
+
+  async function load() {
+    msg.replaceChildren(notice("warn", "Cargando..."));
+    const { data, error } = await supabase.from("inventory_on_hand").select("product_id,quality_id,on_hand_kg");
+    if (error) {
+      msg.replaceChildren(notice("error", error.message));
+      return;
+    }
+    msg.replaceChildren();
+
+    invMap = new Map();
+    for (const row of data || []) {
+      const key = bucketKey(row.product_id, row.quality_id);
+      invMap.set(key, Number(row.on_hand_kg || 0));
+    }
+
+    rows = getBuckets();
+    updateSummary();
+    renderTable();
+  }
+
+  await load();
+}
+
 async function pageReports() {
   const msg = h("div");
   const start = h("input", { type: "date" });
@@ -1640,7 +2091,9 @@ async function pageReports() {
         const perSku = new Map(); // skuId|null -> sales stats
         const overall = { entradas: 0, ventas: 0, merma: 0, traspaso: 0, revenue: 0 };
 
+        let reportMovementIndex = 0;
         for (const m of data || []) {
+          reportMovementIndex += 1;
           const lines = m.movement_lines || [];
           for (const l of lines) {
             const pid = l.product_id;
@@ -1683,6 +2136,7 @@ async function pageReports() {
               // ignore in KPI for now (can be added later)
             }
           }
+          await maybeYield(reportMovementIndex, 20);
         }
 
         const overallMermaPctEntradas = overall.entradas > 0 ? (overall.merma / overall.entradas) * 100 : null;
@@ -1917,7 +2371,11 @@ async function pageCutoffs() {
   const detailNotes = h("textarea", { placeholder: "Notas del corte (opcional)." });
 
   const lineSku = h("select");
-  const lineMeasuredAt = h("input", { type: "datetime-local", value: localNowInputValue() });
+  const fixedLineDtLockOn = storageGet(STORAGE_KEYS.cutoffLineFixedDatetimeLock, "0") === "1";
+  const fixedLineDtSaved = storageGet(STORAGE_KEYS.cutoffLineFixedDatetimeValue, "");
+  const lineMeasuredAt = h("input", { type: "datetime-local", value: fixedLineDtLockOn && fixedLineDtSaved ? fixedLineDtSaved : localNowInputValue() });
+  const lineMeasuredAtLock = h("input", { type: "checkbox" });
+  lineMeasuredAtLock.checked = fixedLineDtLockOn;
   const lineWeight = h("input", { type: "number", step: "0.001", min: "0.001", placeholder: "0.000" });
   const lineNotes = h("textarea", { placeholder: "Notas del pesaje (opcional)." });
   const lineProofs = h("input", { type: "file", accept: "image/*", multiple: true });
@@ -1925,6 +2383,20 @@ async function pageCutoffs() {
   const reportCutoffSel = h("select");
 
   setSkuSelectOptions(lineSku);
+
+  lineMeasuredAt.addEventListener("change", () => {
+    if (lineMeasuredAtLock.checked) {
+      storageSet(STORAGE_KEYS.cutoffLineFixedDatetimeValue, String(lineMeasuredAt.value || ""));
+    }
+  });
+
+  lineMeasuredAtLock.addEventListener("change", () => {
+    storageSet(STORAGE_KEYS.cutoffLineFixedDatetimeLock, lineMeasuredAtLock.checked ? "1" : "0");
+    if (lineMeasuredAtLock.checked) {
+      if (!lineMeasuredAt.value) lineMeasuredAt.value = localNowInputValue();
+      storageSet(STORAGE_KEYS.cutoffLineFixedDatetimeValue, String(lineMeasuredAt.value || ""));
+    }
+  });
 
   async function loadCutoffs() {
     listMsg.replaceChildren(notice("warn", "Cargando cortes..."));
@@ -2353,7 +2825,11 @@ async function pageCutoffs() {
           lineWeight.value = "";
           lineNotes.value = "";
           lineProofs.value = "";
-          lineMeasuredAt.value = localNowInputValue();
+          if (lineMeasuredAtLock.checked) {
+            storageSet(STORAGE_KEYS.cutoffLineFixedDatetimeValue, String(lineMeasuredAt.value || ""));
+          } else {
+            lineMeasuredAt.value = localNowInputValue();
+          }
           detailsMsg.appendChild(notice("ok", "Pesaje guardado."));
           await loadCutoffDetails();
         } catch (e) {
@@ -2508,7 +2984,9 @@ async function pageCutoffs() {
     }
 
     const physicalByBucket = new Map();
+    let physicalIndex = 0;
     for (const ln of physicalLines || []) {
+      await maybeYield(++physicalIndex, 25);
       const sku = skuById(ln.sku_id);
       if (!sku) continue;
       const key = bucketKey(sku.product_id, sku.quality_id);
@@ -2516,7 +2994,9 @@ async function pageCutoffs() {
     }
 
     const expectedByBucket = new Map();
+    let allMoveIndex = 0;
     for (const m of allMoves || []) {
+      await maybeYield(++allMoveIndex, 20);
       for (const l of m.movement_lines || []) {
         const key = bucketKey(l.product_id, l.quality_id);
         expectedByBucket.set(key, Number(expectedByBucket.get(key) || 0) + Number(l.delta_weight_kg || 0));
@@ -2534,36 +3014,40 @@ async function pageCutoffs() {
     }
 
     const keys = new Set([...physicalByBucket.keys(), ...expectedByBucket.keys()]);
-    const rows = Array.from(keys)
-      .map((key) => {
-        const skList = (bucketSkus.get(key) || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
-        const primary = choosePrimarySku(skList);
-        const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
-        const expected = Number(expectedByBucket.get(key) || 0);
-        const physical = Number(physicalByBucket.get(key) || 0);
-        const diff = physical - expected;
-        const pct = Math.abs(expected) > 0 ? (diff / Math.abs(expected)) * 100 : physical === 0 ? 0 : null;
-        const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
-        return {
-          key,
-          product_id: String(key).split("|")[0] || null,
-          quality_id: String(key).split("|")[1] || null,
-          expected,
-          physical,
-          diff,
-          pct,
-          primary,
-          skList,
-          codes,
-          sortCode,
-        };
-      })
+    const rows = [];
+    let rowBuildIndex = 0;
+    for (const key of keys) {
+      const skList = (bucketSkus.get(key) || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
+      const primary = choosePrimarySku(skList);
+      const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
+      const expected = Number(expectedByBucket.get(key) || 0);
+      const physical = Number(physicalByBucket.get(key) || 0);
+      const diff = physical - expected;
+      const pct = Math.abs(expected) > 0 ? (diff / Math.abs(expected)) * 100 : physical === 0 ? 0 : null;
+      const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
+      rows.push({
+        key,
+        product_id: String(key).split("|")[0] || null,
+        quality_id: String(key).split("|")[1] || null,
+        expected,
+        physical,
+        diff,
+        pct,
+        primary,
+        skList,
+        codes,
+        sortCode,
+      });
+      await maybeYield(++rowBuildIndex, 20);
+    }
+
+    const comparableRows = rows
       .filter((r) => Math.abs(r.expected) > 0 || Math.abs(r.physical) > 0)
       .sort((a, b) => (a.sortCode - b.sortCode) || String(skuLabel(a.primary?.id || "")).localeCompare(String(skuLabel(b.primary?.id || ""))));
 
-    const discrepancyRows = rows.filter((r) => Math.abs(r.diff) > 0.0005);
-    const totalExpected = rows.reduce((acc, r) => acc + r.expected, 0);
-    const totalPhysical = rows.reduce((acc, r) => acc + r.physical, 0);
+    const discrepancyRows = comparableRows.filter((r) => Math.abs(r.diff) > 0.0005);
+    const totalExpected = comparableRows.reduce((acc, r) => acc + r.expected, 0);
+    const totalPhysical = comparableRows.reduce((acc, r) => acc + r.physical, 0);
     const totalDiff = totalPhysical - totalExpected;
     const totalPct = Math.abs(totalExpected) > 0 ? (totalDiff / Math.abs(totalExpected)) * 100 : null;
 
@@ -2581,7 +3065,7 @@ async function pageCutoffs() {
       h(
         "tbody",
         {},
-        rows.map((r) => {
+          comparableRows.map((r) => {
           const diffTxt = `${r.diff > 0 ? "+" : ""}${fmtKg(r.diff)}`;
           const pctTxt = r.pct == null ? "N/A" : `${r.pct > 0 ? "+" : ""}${r.pct.toFixed(2)}%`;
           const desc = r.primary
@@ -2602,6 +3086,7 @@ async function pageCutoffs() {
     ]);
 
     const kardexRows = [];
+    let kardexMovementIndex = 0;
     for (const m of periodMoves || []) {
       const lines = m.movement_lines || [];
       for (const l of lines) {
@@ -2621,12 +3106,13 @@ async function pageCutoffs() {
           currency: String(m.currency || DEFAULT_CURRENCY),
         });
       }
+      await maybeYield(++kardexMovementIndex, 20);
     }
 
     latestKardexRows = kardexRows;
     latestPeriodStartIso = periodStartIso;
     latestPeriodEndIso = cutoffEndIso;
-    latestComparisonRows = rows;
+    latestComparisonRows = comparableRows;
     latestReportCutoffId = cutoffId;
 
     const kardexTable =
@@ -2836,6 +3322,13 @@ async function pageCutoffs() {
     loadCutoffDetails();
   });
 
+  const lineMeasuredAtLockRow = h("div", { class: "muted" }, [
+    h("label", { class: "row-wrap", style: "align-items:center; justify-content:flex-start; gap: 8px;" }, [
+      lineMeasuredAtLock,
+      h("span", { text: "Fijar fecha/hora para siguientes pesajes." }),
+    ]),
+  ]);
+
   const page = h("div", { class: "col" }, [
     h("div", { class: "card col no-print" }, [
       h("div", { class: "h1", text: "Nuevo corte fisico" }),
@@ -2857,6 +3350,7 @@ async function pageCutoffs() {
         h("div", { class: "divider" }),
         h("div", { class: "h1", text: "Agregar pesaje por SKU" }),
         h("div", { class: "grid2" }, [field("SKU", lineSku), field("Fecha/hora pesaje", lineMeasuredAt)]),
+        lineMeasuredAtLockRow,
         h("div", { class: "grid2" }, [field("Peso (kg)", lineWeight), field("Evidencia (opcional)", lineProofs)]),
         field("Notas del pesaje", lineNotes),
         h("div", { class: "row-wrap" }, [addLineBtn]),
@@ -3264,7 +3758,9 @@ async function pageSettings() {
           ].join(","),
         ];
 
-	        for (const m of data || []) {
+        let exportMovementIndex = 0;
+        for (const m of data || []) {
+          await maybeYield(++exportMovementIndex, 20);
 	          const proofPaths = (m.movement_attachments || []).map((a) => a.storage_path).join("|");
 	          const fromSku = m.from_sku_id ? skuById(m.from_sku_id) : null;
 	          const toSku = m.to_sku_id ? skuById(m.to_sku_id) : null;
@@ -3286,7 +3782,9 @@ async function pageSettings() {
 	            m.from_quality_id ? qualityName(m.from_quality_id) : "",
 	            m.to_quality_id ? qualityName(m.to_quality_id) : "",
 	          ];
+          let lineIdx = 0;
           for (const l of m.movement_lines || []) {
+            await maybeYield(exportMovementIndex * 10 + ++lineIdx, 20);
             const s = l.sku_id ? skuById(l.sku_id) : null;
             const skuCode = s && Number.isFinite(s.code) ? String(s.code) : "";
             const skuName = s ? String(s.name || "") : "";
@@ -3419,6 +3917,7 @@ async function render() {
   if (r === "capture") return pageCapture();
   if (r === "movements") return pageMovements();
   if (r === "inventory") return pageInventory();
+  if (r === "hypothetical") return pageHypothetical();
   if (r === "cutoffs") return pageCutoffs();
   if (r === "reports") return pageReports();
   if (r === "settings") return pageSettings();
@@ -3450,10 +3949,11 @@ async function safeRender() {
 let lastResumeRefreshAt = 0;
 async function refreshAfterResume() {
   const now = Date.now();
-  if (now - lastResumeRefreshAt < 3000) return;
+  if (now - lastResumeRefreshAt < RESUME_REFRESH_MS) return;
   lastResumeRefreshAt = now;
+  if (route() === "capture") return;
   try {
-    await loadSession();
+    await withTimeout(loadSession(), NETWORK_TIMEOUT_MS, "Reconectando...");
     state.masterLoaded = false;
   } catch {
     // ignore; safeRender will show auth error if needed
