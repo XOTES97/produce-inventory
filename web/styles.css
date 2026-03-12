@@ -20,7 +20,7 @@
   --pad: 16px;
   --pad2: 12px;
 
-  --font: "Inter", "Segoe UI", "Avenir Next", Avenir, "Futura", "Trebuchet MS", "Segoe UI", sans-serif;
+  --font: "Poppins", "Avenir Next", "Segoe UI", "Trebuchet MS", "Futura", "Avenir", "Gill Sans", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
 }
 
@@ -33,6 +33,12 @@ body {
   background:
     radial-gradient(circle at 20% 8%, #eaf0fb 0%, transparent 45%),
     linear-gradient(180deg, var(--bg0), var(--bg1) 65%, var(--bg2));
+  animation: appFadeIn 0.16s ease-out;
+}
+
+@keyframes appFadeIn {
+  from { opacity: 0.985; }
+  to { opacity: 1; }
 }
 
 a { color: inherit; text-decoration: none; }
@@ -48,21 +54,21 @@ a { color: inherit; text-decoration: none; }
   top: 0;
   z-index: 10;
   backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.94);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(255, 255, 255, 0.84));
   border-bottom: 1px solid var(--line);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
 }
 
 .topbar-logo {
-  width: 56px;
-  height: 56px;
-  border-radius: 0;
+  width: 58px;
+  height: 58px;
+  border-radius: 14px;
   border: 0;
   background: transparent;
   padding: 0;
   box-shadow: none;
   object-fit: contain;
-  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.12));
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.12));
 }
 
 .brand-block {
@@ -126,7 +132,19 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--radius);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
   padding: var(--pad);
+  position: relative;
+  overflow: hidden;
   animation: panelReveal 0.25s ease both;
+}
+
+.card:before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(29, 107, 58, 0.06);
+  pointer-events: none;
+  opacity: 0.7;
 }
 
 @keyframes panelReveal {
@@ -292,20 +310,21 @@ textarea { min-height: 84px; resize: vertical; }
   bottom: 0;
   z-index: 20;
   border-top: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(250, 253, 255, 0.88), rgba(244, 247, 251, 0.94));
+  background: linear-gradient(180deg, rgba(250, 253, 255, 0.94), rgba(244, 247, 251, 0.99));
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   pointer-events: auto;
   box-shadow: 0 -8px 30px rgba(23, 32, 47, 0.08);
+  border-image: linear-gradient(90deg, transparent, rgba(23, 32, 47, 0.07), transparent) 1;
 }
 
 .bottomnav-inner {
   max-width: 980px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-  gap: 6px;
-  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
 }
 
 .navbtn {
@@ -314,8 +333,9 @@ textarea { min-height: 84px; resize: vertical; }
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 8px 6px;
-  border-radius: 14px;
+  min-height: 60px;
+  padding: 8px 4px 7px;
+  border-radius: 12px;
   border: 1px solid transparent;
   color: var(--muted);
   cursor: pointer;
@@ -325,13 +345,35 @@ textarea { min-height: 84px; resize: vertical; }
   transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
-.navbtn .icon { font-size: 16px; line-height: 1; }
-.navbtn .label { font-size: 11px; }
+.navbtn .icon { font-size: 17px; line-height: 1; }
+.navbtn .label {
+  font-size: 11px;
+  line-height: 1.05;
+  text-align: center;
+  white-space: normal;
+}
 
 .navbtn[aria-current="page"] {
   color: var(--text);
   border-color: rgba(29, 107, 58, 0.35);
   background: linear-gradient(180deg, rgba(29, 107, 58, 0.16), rgba(29, 107, 58, 0.06));
+}
+
+.navbtn:not([aria-current="page"]):active {
+  color: var(--text);
+  background: rgba(29, 107, 58, 0.06);
+}
+
+.navbtn .label {
+  letter-spacing: 0.1px;
+}
+
+.navbtn .icon {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .navbtn:active {
@@ -355,6 +397,26 @@ textarea { min-height: 84px; resize: vertical; }
 }
 @media (max-width: 720px) {
   .thumbgrid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 430px) {
+  .bottomnav-inner {
+    grid-template-columns: repeat(4, minmax(72px, 1fr));
+    gap: 6px;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+  }
+  .navbtn {
+    min-height: 58px;
+    padding: 7px 2px 6px;
+  }
+  .navbtn .icon {
+    font-size: 16px;
+    width: 22px;
+    height: 22px;
+  }
+  .navbtn .label {
+    font-size: 10px;
+  }
 }
 .thumb {
   width: 100%;

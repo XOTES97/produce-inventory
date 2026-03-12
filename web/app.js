@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.07.9";
-import { supabase } from "./supabaseClient.js?v=2026.03.07.9";
+import * as cfg from "./config.js?v=2026.03.11.01";
+import { supabase } from "./supabaseClient.js?v=2026.03.11.01";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.07.9";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.11.01";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -31,6 +31,9 @@ const NAV_ITEMS = [
 const MOVEMENTS_PAGE_SIZE = 50;
 const UI_YIELD_EVERY = 60;
 const RESUME_REFRESH_MS = 15000;
+const MAX_PROOF_DIMENSION = 1500;
+const PROOF_COMPRESS_QUALITY = 0.82;
+const PROOF_COMPRESS_BYTES_THRESHOLD = 700_000;
 
 const state = {
   session: null,
@@ -48,6 +51,8 @@ const STORAGE_KEYS = {
   captureBatchCloseTime: "produce_inventory.capture.batch_close_time",
   cutoffLineFixedDatetimeLock: "produce_inventory.cutoff_line.fixed_datetime_lock",
   cutoffLineFixedDatetimeValue: "produce_inventory.cutoff_line.fixed_datetime_value",
+  cutoffReportIncludeAdjustments: "produce_inventory.cutoff_report.include_adjustments",
+  cutoffReportApplyDiscrepancy: "produce_inventory.cutoff_report.apply_discrepancy",
   hypotheticalAdjustments: "produce_inventory.hypothetical.adjustments",
 };
 const NETWORK_TIMEOUT_MS = 45000;
@@ -66,6 +71,109 @@ async function maybeYield(i, every = UI_YIELD_EVERY) {
   if (!Number.isFinite(i) || i <= 0) return;
   if (i % every !== 0) return;
   await yieldToUI();
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("No se pudo leer la imagen."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readImageFromDataURL(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("No se pudo decodificar la imagen."));
+    img.src = dataUrl;
+  });
+}
+
+function canvasToBlob(canvas, options) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((blob) => resolve(blob), options?.type || "image/jpeg", options?.quality ?? 0.82);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function proofSafeName(name, useJpeg = true) {
+  const base = sanitizeFilename(name || "proof");
+  if (!useJpeg) return base;
+  if (/\.(jpg|jpeg)$/i.test(base)) return base;
+  const trimmed = base.replace(/\.[^/.]+$/, "");
+  return `${trimmed || "proof"}.jpg`;
+}
+
+async function normalizeProofFile(file, { maxDimension = MAX_PROOF_DIMENSION, quality = PROOF_COMPRESS_QUALITY } = {}) {
+  const rawType = String(file?.type || "").toLowerCase();
+  const rawName = String(file?.name || "");
+  const looksLikeImage =
+    /^image\//i.test(rawType) || /\.(heic|heif|jpg|jpeg|png|webp|gif|bmp)$/i.test(rawName);
+  if (!file || !looksLikeImage) {
+    return { file, normalized: false };
+  }
+
+  const originalSize = Number(file.size);
+  if (!Number.isFinite(originalSize) || originalSize <= PROOF_COMPRESS_BYTES_THRESHOLD) {
+    return { file, normalized: false };
+  }
+
+  try {
+    const dataUrl = await readFileAsDataURL(file);
+    if (!dataUrl) return { file, normalized: false };
+    const img = await readImageFromDataURL(dataUrl);
+    const sourceW = img.naturalWidth || img.width || 0;
+    const sourceH = img.naturalHeight || img.height || 0;
+    if (!Number.isFinite(sourceW) || !Number.isFinite(sourceH) || sourceW <= 0 || sourceH <= 0) {
+      return { file, normalized: false };
+    }
+    const scale = Math.min(1, maxDimension / sourceW, maxDimension / sourceH);
+    if (scale >= 1) {
+      return { file, normalized: false };
+    }
+    const targetW = Math.max(1, Math.floor(sourceW * scale));
+    const targetH = Math.max(1, Math.floor(sourceH * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { file, normalized: false };
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+    const blob = await canvasToBlob(canvas, { type: "image/jpeg", quality });
+    if (!blob) return { file, normalized: false };
+    const normalized = new File([blob], proofSafeName(file.name, true), {
+      type: "image/jpeg",
+      lastModified: file.lastModified || Date.now(),
+    });
+    return { file: normalized, normalized: true };
+  } catch (e) {
+    return { file, normalized: false, error: e };
+  }
+}
+
+async function prepareProofFiles(rawFiles, { label = "evidencia", onProgress } = {}) {
+  const out = [];
+  for (let i = 0; i < rawFiles.length; i++) {
+    const idx = i + 1;
+    onProgress?.(idx, rawFiles.length, label);
+    await maybeYield(idx, 1);
+    const raw = rawFiles[i];
+    const result = await normalizeProofFile(raw);
+    const file = result.file || raw;
+    out.push({
+      file,
+      original_filename: raw?.name || null,
+      original_content_type: raw?.type || null,
+      upload_size: Number(file?.size),
+      normalized: !!result.normalized,
+    });
+  }
+  return out;
 }
 
 function navTo(r) {
@@ -1070,23 +1178,33 @@ async function pageCapture() {
         };
 
         setSubmitting(true);
-        msg.replaceChildren(notice("warn", "Guardando movimiento..."));
+        msg.replaceChildren(notice("warn", "Procesando evidencia..."));
 
         let movementId = "";
         const uploaded = [];
         try {
           movementId = crypto.randomUUID();
 
-          // 1) Upload proofs first (so we can fail fast before writing to DB).
-          for (let i = 0; i < files.length; i++) {
-            const f = files[i];
-            const safe = sanitizeFilename(f.name);
+          // 1) Prepare proofs (with light compression when needed) and upload first
+          // so we can fail fast before writing to DB.
+          const preparedFiles = await prepareProofFiles(files, {
+            label: "evidencia del movimiento",
+            onProgress: (idx, total, label) => {
+              msg.replaceChildren(notice("warn", `${label} ${idx}/${total}`));
+            },
+          });
+
+          for (let i = 0; i < preparedFiles.length; i++) {
+            const p = preparedFiles[i];
+            const safe = sanitizeFilename(p.file?.name || "proof");
             const path = `${userId}/${movementId}/${Date.now()}_${i}_${safe}`;
+            const sourceType = p.file?.type || "application/octet-stream";
+            msg.replaceChildren(notice("warn", `Subiendo evidencia ${i + 1}/${preparedFiles.length}...`));
             const { error: upErr } = await withTimeout(
-              supabase.storage.from("movement-proofs").upload(path, f, {
+              supabase.storage.from("movement-proofs").upload(path, p.file, {
                 cacheControl: "3600",
                 upsert: false,
-                contentType: f.type || "application/octet-stream",
+                contentType: sourceType,
               }),
               NETWORK_TIMEOUT_MS,
               `Subida de evidencia ${i + 1}`
@@ -1095,10 +1213,11 @@ async function pageCapture() {
             uploaded.push({
               storage_bucket: "movement-proofs",
               storage_path: path,
-              original_filename: f.name || null,
-              content_type: f.type || null,
-              size_bytes: f.size || null,
+              original_filename: p.original_filename || null,
+              content_type: p.original_content_type || sourceType || null,
+              size_bytes: Number.isFinite(p.upload_size) ? p.upload_size : null,
             });
+            await maybeYield(i + 1, 1);
           }
 
           // 2) Build DB rows (signed deltas)
@@ -2385,8 +2504,29 @@ async function pageCutoffs() {
   const lineProofs = h("input", { type: "file", accept: "image/*", multiple: true });
 
   const reportCutoffSel = h("select");
+  const reportIncludeAdjustments = h("select");
+  const reportApplyDiscrepancy = h("select");
 
   setSkuSelectOptions(lineSku);
+  const includeAdjustmentsSaved = storageGet(STORAGE_KEYS.cutoffReportIncludeAdjustments, "with");
+  const applyDiscrepancySaved = storageGet(STORAGE_KEYS.cutoffReportApplyDiscrepancy, "without");
+  reportIncludeAdjustments.replaceChildren(
+    h("option", { value: "with", text: "Con ajustes previos de cortes" }),
+    h("option", { value: "without", text: "Sin ajustes previos de cortes" })
+  );
+  reportApplyDiscrepancy.replaceChildren(
+    h("option", { value: "without", text: "Sin aplicar discrepancia actual" }),
+    h("option", { value: "with", text: "Aplicar discrepancia actual (snapshot)" })
+  );
+  reportIncludeAdjustments.value = includeAdjustmentsSaved === "without" ? "without" : "with";
+  reportApplyDiscrepancy.value = applyDiscrepancySaved === "with" ? "with" : "without";
+
+  reportIncludeAdjustments.addEventListener("change", () => {
+    storageSet(STORAGE_KEYS.cutoffReportIncludeAdjustments, String(reportIncludeAdjustments.value || "with"));
+  });
+  reportApplyDiscrepancy.addEventListener("change", () => {
+    storageSet(STORAGE_KEYS.cutoffReportApplyDiscrepancy, String(reportApplyDiscrepancy.value || "without"));
+  });
 
   lineMeasuredAt.addEventListener("change", () => {
     if (lineMeasuredAtLock.checked) {
@@ -2797,15 +2937,24 @@ async function pageCutoffs() {
           });
           if (lineErr) throw lineErr;
 
-          for (let i = 0; i < files.length; i++) {
-            const f = files[i];
-            const safe = sanitizeFilename(f.name);
+          const preparedFiles = await prepareProofFiles(files, {
+            label: "evidencia de corte",
+            onProgress: (idx, total, label) => {
+              detailsMsg.replaceChildren(notice("warn", `${label} ${idx}/${total}`));
+            },
+          });
+
+          for (let i = 0; i < preparedFiles.length; i++) {
+            const p = preparedFiles[i];
+            const safe = sanitizeFilename(p.file?.name || "proof");
             const path = `${userId}/${cutoffId}/${lineId}/${Date.now()}_${i}_${safe}`;
+            const sourceType = p.file?.type || "application/octet-stream";
+            detailsMsg.replaceChildren(notice("warn", `Subiendo evidencia ${i + 1}/${preparedFiles.length}...`));
             const { error: upErr } = await withTimeout(
-              supabase.storage.from("physical-cutoff-proofs").upload(path, f, {
+              supabase.storage.from("physical-cutoff-proofs").upload(path, p.file, {
                 cacheControl: "3600",
                 upsert: false,
-                contentType: f.type || "application/octet-stream",
+                contentType: sourceType,
               }),
               NETWORK_TIMEOUT_MS,
               `Subida de evidencia de corte ${i + 1}`
@@ -2815,10 +2964,11 @@ async function pageCutoffs() {
               cutoff_line_id: lineId,
               storage_bucket: "physical-cutoff-proofs",
               storage_path: path,
-              original_filename: f.name || null,
-              content_type: f.type || null,
-              size_bytes: Number.isFinite(f.size) ? f.size : null,
+              original_filename: p.original_filename || null,
+              content_type: p.original_content_type || sourceType || null,
+              size_bytes: Number.isFinite(p.upload_size) ? p.upload_size : null,
             });
+            await maybeYield(i + 1, 1);
           }
 
           if (uploaded.length > 0) {
@@ -2940,6 +3090,8 @@ async function pageCutoffs() {
       reportMsg.appendChild(notice("error", "Corte no encontrado."));
       return;
     }
+    const includeAdjustments = reportIncludeAdjustments.value === "with";
+    const applyCurrentDiscrepancy = reportApplyDiscrepancy.value === "with";
 
     const cutoffEndIso = cutoffAnchorIso(cutoff);
     if (!cutoffEndIso) {
@@ -2964,7 +3116,7 @@ async function pageCutoffs() {
 
     const { data: allMoves, error: allMovesErr } = await supabase
       .from("movements")
-      .select("id,occurred_at,movement_lines(product_id,quality_id,delta_weight_kg)")
+      .select("id,movement_type,occurred_at,movement_lines(product_id,quality_id,delta_weight_kg)")
       .lte("occurred_at", cutoffEndIso)
       .order("occurred_at", { ascending: true });
     if (allMovesErr) {
@@ -3000,6 +3152,7 @@ async function pageCutoffs() {
     const expectedByBucket = new Map();
     let allMoveIndex = 0;
     for (const m of allMoves || []) {
+      if (!includeAdjustments && String(m.movement_type || "") === "ajuste") continue;
       await maybeYield(++allMoveIndex, 20);
       for (const l of m.movement_lines || []) {
         const key = bucketKey(l.product_id, l.quality_id);
@@ -3026,14 +3179,15 @@ async function pageCutoffs() {
       const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
       const expected = Number(expectedByBucket.get(key) || 0);
       const physical = Number(physicalByBucket.get(key) || 0);
-      const diff = physical - expected;
-      const pct = Math.abs(expected) > 0 ? (diff / Math.abs(expected)) * 100 : physical === 0 ? 0 : null;
+      const expectedForView = applyCurrentDiscrepancy ? expected + (physical - expected) : expected;
+      const diff = physical - expectedForView;
+      const pct = Math.abs(expectedForView) > 0 ? (diff / Math.abs(expectedForView)) * 100 : physical === 0 ? 0 : null;
       const sortCode = skList.length ? Math.min(...skList.map((s) => Number(s.code || 0))) : 999999;
       rows.push({
         key,
         product_id: String(key).split("|")[0] || null,
         quality_id: String(key).split("|")[1] || null,
-        expected,
+        expected: expectedForView,
         physical,
         diff,
         pct,
@@ -3054,6 +3208,9 @@ async function pageCutoffs() {
     const totalPhysical = comparableRows.reduce((acc, r) => acc + r.physical, 0);
     const totalDiff = totalPhysical - totalExpected;
     const totalPct = Math.abs(totalExpected) > 0 ? (totalDiff / Math.abs(totalExpected)) * 100 : null;
+    const reportModeTxt = `${includeAdjustments ? "Con" : "Sin"} ajustes previos de cortes; ${
+      applyCurrentDiscrepancy ? "Discrepancia actual aplicada (snapshot)" : "Discrepancia actual sin aplicar"
+    }`;
 
     const compareTable = h("table", { class: "table" }, [
       h("thead", {}, [
@@ -3091,7 +3248,8 @@ async function pageCutoffs() {
 
     const kardexRows = [];
     let kardexMovementIndex = 0;
-    for (const m of periodMoves || []) {
+    const periodRowsForReport = (periodMoves || []).filter((m) => includeAdjustments || String(m.movement_type || "") !== "ajuste");
+    for (const m of periodRowsForReport) {
       const lines = m.movement_lines || [];
       for (const l of lines) {
         kardexRows.push({
@@ -3168,6 +3326,7 @@ async function pageCutoffs() {
       h("div", { class: "card col" }, [
         h("div", { class: "h1", text: "Resumen de corte" }),
         h("div", { class: "muted", text: `Corte actual: ${cutoffLabel(cutoff)}` }),
+        h("div", { class: "muted", text: `Modo de comparacion: ${reportModeTxt}` }),
         prevCutoff ? h("div", { class: "muted", text: `Corte previo: ${cutoffLabel(prevCutoff)}` }) : h("div", { class: "muted", text: "Corte previo: no existe (primer corte)." }),
         h("div", { class: "muted", text: `Periodo kardex: ${periodStartIso ? formatOccurredAt(periodStartIso) : "Inicio historico"} -> ${formatOccurredAt(cutoffEndIso)}` }),
         h("div", { class: "grid2" }, [
@@ -3368,6 +3527,7 @@ async function pageCutoffs() {
       h("div", { class: "muted", text: "Aplicar diferencia al sistema crea un Ajuste automatico (1 segundo despues del corte) para que el siguiente periodo arranque desde el inventario fisico." }),
       reportMsg,
       field("Corte a comparar", reportCutoffSel),
+      h("div", { class: "grid2" }, [field("Base de calculo", reportIncludeAdjustments), field("Vista de discrepancia", reportApplyDiscrepancy)]),
       h("div", { class: "row-wrap" }, [generateReportBtn, applyCutoffBtn, exportKardexBtn, printBtn]),
     ]),
     reportOut,
