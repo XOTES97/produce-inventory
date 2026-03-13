@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.11.01";
-import { supabase } from "./supabaseClient.js?v=2026.03.11.01";
+import * as cfg from "./config.js?v=2026.03.13.05";
+import { supabase } from "./supabaseClient.js?v=2026.03.13.05";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.11.01";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.13.05";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -30,10 +30,36 @@ const NAV_ITEMS = [
 ];
 const MOVEMENTS_PAGE_SIZE = 50;
 const UI_YIELD_EVERY = 60;
+const SUBMIT_PARSE_YIELD_EVERY = 2;
 const RESUME_REFRESH_MS = 15000;
 const MAX_PROOF_DIMENSION = 1500;
 const PROOF_COMPRESS_QUALITY = 0.82;
-const PROOF_COMPRESS_BYTES_THRESHOLD = 700_000;
+const PROOF_COMPRESS_BYTES_THRESHOLD = 5_000_000;
+const MOVEMENT_LINES_PREVIEW_LIMIT = 12;
+const DEFAULT_PROOF_STAMP_ROWS = 2;
+
+const ROUTE_ACCESS = {
+  employee: new Set(["capture"]),
+  manager: null,
+};
+
+const MOVEMENT_TYPES = {
+  entrada: "Entrada",
+  venta: "Venta",
+  merma: "Merma",
+  traspaso_sku: "Traspaso SKU",
+  traspaso_calidad: "Traspaso",
+  ajuste: "Ajuste",
+};
+
+const MOVEMENT_TYPES_BY_ROLE = {
+  manager: ["entrada", "venta", "merma", "traspaso_sku", "traspaso_calidad", "ajuste"],
+  employee: ["venta", "merma", "traspaso_sku"],
+};
+const ROUTE_BY_ROLE = {
+  manager: null,
+  employee: new Set(["capture"]),
+};
 
 const state = {
   session: null,
@@ -42,6 +68,22 @@ const state = {
   employees: [],
   skus: [],
   masterLoaded: false,
+  actor: {
+    workspace_id: null,
+    role: "manager",
+    employee_id: null,
+    merma_limit_kg: null,
+    allow_all_traspaso_sku: true,
+    display_name: null,
+  },
+  actorLoaded: false,
+};
+
+const lookups = {
+  productsById: new Map(),
+  qualitiesById: new Map(),
+  employeesById: new Map(),
+  skusById: new Map(),
 };
 
 const STORAGE_KEYS = {
@@ -63,6 +105,70 @@ function route() {
   return r || "capture";
 }
 
+function actorRole() {
+  const role = String(state.actor?.role || "manager").toLowerCase();
+  return role === "employee" ? "employee" : "manager";
+}
+
+function isManager() {
+  return actorRole() === "manager";
+}
+
+function currentActorCanAccessRoute(r) {
+  const allowed = ROUTE_BY_ROLE[actorRole()];
+  if (!allowed) return true;
+  return allowed.has(String(r || ""));
+}
+
+function currentRouteAllowed(routeName) {
+  return currentActorCanAccessRoute(routeName);
+}
+
+function movementTypesForActor() {
+  return MOVEMENT_TYPES_BY_ROLE[actorRole()] || MOVEMENT_TYPES_BY_ROLE.manager;
+}
+
+function hasProofRequirement() {
+  return actorRole() === "employee";
+}
+
+function actorEmployeeId() {
+  const v = String(state.actor?.employee_id || "").trim();
+  return v || null;
+}
+
+function getActorDisplayName() {
+  const v = String(state.actor?.display_name || "").trim();
+  return v || null;
+}
+
+function normalizeActorRoleError(message) {
+  const code = String(message || "").trim();
+  if (!code) return "";
+
+  switch (code) {
+    case "employee_only_limited_types":
+      return "Este usuario solo puede capturar venta, merma o traspaso entre SKUs.";
+    case "proof_required_for_employee":
+      return "Los empleados deben adjuntar al menos una evidencia para registrar el movimiento.";
+    case "traspaso_sku_not_allowed":
+      return "No tienes permiso para este traspaso entre SKUs.";
+    case "employee_invalid":
+      return "Empleado inválido o inactivo.";
+    case "only_manager_can_delete_movement":
+      return "Solo el gerente puede eliminar movimientos.";
+    case "not_authorized":
+      return "No estás autorizado para esta acción.";
+    default:
+      return code;
+  }
+}
+
+async function ensureActorContextLoaded() {
+  if (!state.session || state.actorLoaded) return;
+  await loadActorContext();
+}
+
 function yieldToUI() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
@@ -80,6 +186,34 @@ function readFileAsDataURL(file) {
     reader.onerror = () => reject(reader.error || new Error("No se pudo leer la imagen."));
     reader.readAsDataURL(file);
   });
+}
+
+async function decodeImageForResize(file) {
+  // Prefer createImageBitmap for less memory churn than base64 data URLs.
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        release: () => {
+          if (typeof bitmap.close === "function") bitmap.close();
+        },
+      };
+    } catch {
+      // Fall back to <img> decoding below.
+    }
+  }
+
+  const dataUrl = await readFileAsDataURL(file);
+  const img = await readImageFromDataURL(dataUrl);
+  return {
+    source: img,
+    width: img.naturalWidth || img.width || 0,
+    height: img.naturalHeight || img.height || 0,
+    release: () => {},
+  };
 }
 
 function readImageFromDataURL(dataUrl) {
@@ -112,9 +246,10 @@ function proofSafeName(name, useJpeg = true) {
 async function normalizeProofFile(file, { maxDimension = MAX_PROOF_DIMENSION, quality = PROOF_COMPRESS_QUALITY } = {}) {
   const rawType = String(file?.type || "").toLowerCase();
   const rawName = String(file?.name || "");
-  const looksLikeImage =
-    /^image\//i.test(rawType) || /\.(heic|heif|jpg|jpeg|png|webp|gif|bmp)$/i.test(rawName);
-  if (!file || !looksLikeImage) {
+  const normalizeSupported =
+    /^image\/(jpeg|png|webp)$/i.test(rawType) || /\.(jpg|jpeg|png|webp)$/i.test(rawName);
+
+  if (!file || !normalizeSupported) {
     return { file, normalized: false };
   }
 
@@ -124,33 +259,37 @@ async function normalizeProofFile(file, { maxDimension = MAX_PROOF_DIMENSION, qu
   }
 
   try {
-    const dataUrl = await readFileAsDataURL(file);
-    if (!dataUrl) return { file, normalized: false };
-    const img = await readImageFromDataURL(dataUrl);
-    const sourceW = img.naturalWidth || img.width || 0;
-    const sourceH = img.naturalHeight || img.height || 0;
-    if (!Number.isFinite(sourceW) || !Number.isFinite(sourceH) || sourceW <= 0 || sourceH <= 0) {
-      return { file, normalized: false };
+    const decoded = await decodeImageForResize(file);
+    if (!decoded?.source) return { file, normalized: false };
+    const source = decoded?.source;
+    const sourceW = decoded?.width || 0;
+    const sourceH = decoded?.height || 0;
+    try {
+      if (!Number.isFinite(sourceW) || !Number.isFinite(sourceH) || sourceW <= 0 || sourceH <= 0) {
+        return { file, normalized: false };
+      }
+      const scale = Math.min(1, maxDimension / sourceW, maxDimension / sourceH);
+      if (scale >= 1) {
+        return { file, normalized: false };
+      }
+      const targetW = Math.max(1, Math.floor(sourceW * scale));
+      const targetH = Math.max(1, Math.floor(sourceH * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return { file, normalized: false };
+      ctx.drawImage(source, 0, 0, targetW, targetH);
+      const blob = await canvasToBlob(canvas, { type: "image/jpeg", quality });
+      if (!blob) return { file, normalized: false };
+      const normalized = new File([blob], proofSafeName(file.name, true), {
+        type: "image/jpeg",
+        lastModified: file.lastModified || Date.now(),
+      });
+      return { file: normalized, normalized: true };
+    } finally {
+      decoded.release?.();
     }
-    const scale = Math.min(1, maxDimension / sourceW, maxDimension / sourceH);
-    if (scale >= 1) {
-      return { file, normalized: false };
-    }
-    const targetW = Math.max(1, Math.floor(sourceW * scale));
-    const targetH = Math.max(1, Math.floor(sourceH * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = targetW;
-    canvas.height = targetH;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return { file, normalized: false };
-    ctx.drawImage(img, 0, 0, targetW, targetH);
-    const blob = await canvasToBlob(canvas, { type: "image/jpeg", quality });
-    if (!blob) return { file, normalized: false };
-    const normalized = new File([blob], proofSafeName(file.name, true), {
-      type: "image/jpeg",
-      lastModified: file.lastModified || Date.now(),
-    });
-    return { file: normalized, normalized: true };
   } catch (e) {
     return { file, normalized: false, error: e };
   }
@@ -336,6 +475,22 @@ function movementLabel(mt) {
   }
 }
 
+function normalizeId(id) {
+  return id == null ? "" : String(id);
+}
+
+function rebuildLookups() {
+  lookups.productsById.clear();
+  lookups.qualitiesById.clear();
+  lookups.employeesById.clear();
+  lookups.skusById.clear();
+
+  for (const p of state.products) lookups.productsById.set(normalizeId(p.id), p);
+  for (const q of state.qualities) lookups.qualitiesById.set(normalizeId(q.id), q);
+  for (const e of state.employees) lookups.employeesById.set(normalizeId(e.id), e);
+  for (const s of state.skus) lookups.skusById.set(normalizeId(s.id), s);
+}
+
 function sanitizeFilename(name) {
   return String(name || "proof")
     .replace(/[^a-zA-Z0-9._-]+/g, "_")
@@ -343,19 +498,23 @@ function sanitizeFilename(name) {
 }
 
 function productName(id) {
-  return state.products.find((p) => p.id === id)?.name ?? "(Producto desconocido)";
+  const key = normalizeId(id);
+  return lookups.productsById.get(key)?.name ?? "(Producto desconocido)";
 }
 
 function qualityName(id) {
-  return state.qualities.find((q) => q.id === id)?.name ?? "(Calidad desconocida)";
+  const key = normalizeId(id);
+  return lookups.qualitiesById.get(key)?.name ?? "(Calidad desconocida)";
 }
 
 function employeeName(id) {
-  return state.employees.find((e) => e.id === id)?.name ?? "(Empleado desconocido)";
+  const key = normalizeId(id);
+  return lookups.employeesById.get(key)?.name ?? "(Empleado desconocido)";
 }
 
 function skuById(id) {
-  return state.skus.find((s) => s.id === id) || null;
+  const key = normalizeId(id);
+  return lookups.skusById.get(key) || null;
 }
 
 function skuLabel(id) {
@@ -369,6 +528,50 @@ async function loadSession() {
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
   state.session = data.session;
+}
+
+async function loadActorContext() {
+  if (!state.session) {
+    state.actor = {
+      workspace_id: null,
+      role: "manager",
+      employee_id: null,
+      merma_limit_kg: null,
+      allow_all_traspaso_sku: true,
+      display_name: null,
+    };
+    state.actorLoaded = true;
+    return;
+  }
+
+  state.actorLoaded = false;
+  try {
+    const { data, error } = await withTimeout(supabase.rpc("get_actor_context"), 7000, "Cargando permisos");
+    if (error) throw error;
+
+    const actor = {
+      workspace_id: data?.workspace_id || null,
+      role: String(data?.role || "manager").toLowerCase() === "employee" ? "employee" : "manager",
+      employee_id: data?.employee_id || null,
+      merma_limit_kg: data?.merma_limit_kg ?? null,
+      allow_all_traspaso_sku: data?.allow_all_traspaso_sku !== false,
+      display_name: data?.display_name || null,
+    };
+    state.actor = actor;
+  } catch {
+    // Backward compatibility: if this DB does not yet support actor context,
+    // keep manager mode to avoid blocking old projects.
+    state.actor = {
+      workspace_id: null,
+      role: "manager",
+      employee_id: null,
+      merma_limit_kg: null,
+      allow_all_traspaso_sku: true,
+      display_name: null,
+    };
+  } finally {
+    state.actorLoaded = true;
+  }
 }
 
 async function loadMasterData() {
@@ -410,6 +613,7 @@ async function loadMasterData() {
     code: Number(s.code),
     name: String(s.name),
   }));
+  rebuildLookups();
   state.masterLoaded = true;
 }
 
@@ -457,12 +661,13 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
   app.appendChild(content);
 
   if (showNav && state.session) {
+    const navItems = NAV_ITEMS.filter((it) => currentRouteAllowed(it.route));
     const r = route();
       const nav = h("div", { class: "bottomnav" }, [
         h(
           "div",
           { class: "bottomnav-inner" },
-        NAV_ITEMS.map((it) =>
+        navItems.map((it) =>
           h(
             "a",
             {
@@ -559,16 +764,21 @@ async function pageLogin() {
   layout(ROUTE_TITLES.login, card, { showNav: false });
 }
 
-function movementTypePills({ onChange, initial }) {
+function movementTypePills({ onChange, allowed = movementTypesForActor(), initial }) {
+  const allowedIds = Array.isArray(allowed) ? [...allowed] : movementTypesForActor();
+  const starting = String(initial || "").trim();
+  const allowedSet = new Set(allowedIds);
   const types = [
-    { id: "entrada", label: "Entrada" },
-    { id: "venta", label: "Venta" },
-    { id: "merma", label: "Merma" },
-    { id: "traspaso_sku", label: "Traspaso SKU" },
-    { id: "traspaso_calidad", label: "Traspaso" },
-    { id: "ajuste", label: "Ajuste" },
-  ];
-  let current = initial || "venta";
+    { id: "entrada", label: "Entrada", role: "manager" },
+    { id: "venta", label: "Venta", role: "any" },
+    { id: "merma", label: "Merma", role: "any" },
+    { id: "traspaso_sku", label: "Traspaso SKU", role: "any" },
+    { id: "traspaso_calidad", label: "Traspaso", role: "manager" },
+    { id: "ajuste", label: "Ajuste", role: "manager" },
+  ].filter((t) => allowedSet.has(t.id));
+
+  let current = starting ? starting : (types[0]?.id || "venta");
+  if (!allowedSet.has(current)) current = types[0]?.id || "venta";
 
   const pills = types.map((t) =>
     h(
@@ -764,6 +974,41 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
   return { el: row, get, setMode: setVisibilityForMode, setProductQuality };
 }
 
+function buildMovementLinePreviewItems(lines, movementType, currency, maxLines = MOVEMENT_LINES_PREVIEW_LIMIT) {
+  if (!Array.isArray(lines) || lines.length === 0) return null;
+  const safeMax = Number.isFinite(maxLines) && maxLines > 0 ? Math.floor(maxLines) : 0;
+  const visibleCount = safeMax > 0 ? Math.min(lines.length, safeMax) : lines.length;
+  const nodes = [];
+
+  for (let i = 0; i < visibleCount; i++) {
+    const l = lines[i];
+    const skuText = skuLabel(l.sku_id) || `${productName(l.product_id)} | ${qualityName(l.quality_id)}`;
+    const d = Number(l.delta_weight_kg || 0);
+    const kg = `${d >= 0 ? "+" : "-"}${fmtKg(Math.abs(d))} kg`;
+    const pieces = [kg];
+    if (l.boxes != null) pieces.push(`${Number(l.boxes || 0)} cajas`);
+    if (movementType === "venta" && l.line_total != null) {
+      pieces.push(fmtMoney(Number(l.line_total || 0), currency || DEFAULT_CURRENCY));
+    }
+    nodes.push(
+      h("div", { class: "movement-line-item" }, [
+        h("div", { class: "mono movement-line-sku", text: skuText }),
+        h("div", { class: "spacer" }),
+        h("div", { class: "mono movement-line-qty", text: pieces.join(" | ") }),
+      ])
+    );
+  }
+
+  const remaining = lines.length - visibleCount;
+  if (remaining > 0) {
+    nodes.push(
+      h("div", { class: "movement-line-item muted", text: `+ ${remaining} registro(s) más — abre Ver` })
+    );
+  }
+
+  return h("div", { class: "movement-lines-preview col" }, nodes);
+}
+
 async function pageCapture() {
   const products = state.products.filter((p) => p.is_active);
   const qualities = state.qualities.filter((q) => q.is_active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -869,6 +1114,18 @@ async function pageCapture() {
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
   const currency = h("input", { type: "text", value: DEFAULT_CURRENCY, placeholder: "Moneda (MXN)" });
   const reportedBy = h("select", {}, optionList(employees, { includeEmpty: true, emptyLabel: "(Opcional)..." }));
+  const autoEmpId = actorEmployeeId();
+  const actorRequiresEmployee = hasProofRequirement();
+  const isActorManager = isManager();
+  if (autoEmpId) {
+    reportedBy.value = autoEmpId;
+    if (!isActorManager) {
+      reportedBy.setAttribute("disabled", "true");
+    }
+  }
+  const reportedByField = isActorManager
+    ? field("Empleado", reportedBy)
+    : [field("Empleado", h("div", { class: "muted", text: getActorDisplayName() || "Empleado asociado" }))];
 
   const fromQuality = h("select", {}, optionList(qualities, { includeEmpty: true, emptyLabel: "De calidad..." }));
   const toQuality = h("select", {}, optionList(qualities, { includeEmpty: true, emptyLabel: "A calidad..." }));
@@ -900,12 +1157,19 @@ async function pageCapture() {
   );
 
   const proofs = h("input", { type: "file", accept: "image/*", multiple: "multiple" });
+  if (!isActorManager) {
+    proofs.setAttribute("capture", "environment");
+  }
   const proofsHint = h("div", { class: "muted" }, [
-    "Evidencia (opcional): foto(s) de WhatsApp. Capturas de pantalla funcionan.",
+    actorRequiresEmployee
+      ? "Evidencia obligatoria (empleado): toma la foto del movimiento antes de guardar."
+      : "Evidencia (opcional): foto(s) de WhatsApp o captura de pantalla.",
   ]);
 
+  const availableMovementTypes = movementTypesForActor();
   const pills = movementTypePills({
-    initial: "venta",
+    allowed: availableMovementTypes,
+    initial: availableMovementTypes[0] || "venta",
     onChange: (mt) => updateMode(mt),
   });
 
@@ -1079,6 +1343,10 @@ async function pageCapture() {
           msg.appendChild(notice("error", "Fecha/hora invalida."));
           return;
         }
+        if (!movementTypesForActor().includes(currentMode)) {
+          msg.appendChild(notice("error", "No tienes permiso para ese tipo de movimiento."));
+          return;
+        }
         const isAggregateMode = aggregateMode.checked;
         const aggregateDtIso = isAggregateMode ? buildBatchOccurredIso(dtInputValue, aggregateCloseTime.value) : null;
         if (isAggregateMode && !aggregateDtIso) {
@@ -1096,6 +1364,10 @@ async function pageCapture() {
         const finalNotes = isAggregateMode ? `${noteBase}${aggregateSuffix}`.trim() : noteBase;
 
         const files = Array.from(proofs.files || []);
+        if (hasProofRequirement() && files.length === 0) {
+          msg.appendChild(notice("error", "Como empleado, debes adjuntar evidencia para guardar el movimiento."));
+          return;
+        }
         const rawLines = lineRows.map((r) => r.get());
         const parsed = [];
 
@@ -1116,6 +1388,7 @@ async function pageCapture() {
         }
 
         for (const [i, ln] of rawLines.entries()) {
+          await maybeYield(i + 1, SUBMIT_PARSE_YIELD_EVERY);
           const sku_id = String(ln.sku_id || "").trim();
           const product_id = ln.product_id;
           const quality_id = ln.quality_id;
@@ -1178,12 +1451,15 @@ async function pageCapture() {
         };
 
         setSubmitting(true);
-        msg.replaceChildren(notice("warn", "Procesando evidencia..."));
+        msg.replaceChildren(notice("warn", rawLines.length > 1 ? "Validando lineas..." : "Validando linea..."));
 
         let movementId = "";
         const uploaded = [];
         try {
           movementId = crypto.randomUUID();
+          if (rawLines.length > 0) {
+            msg.replaceChildren(notice("warn", `Validando ${rawLines.length} lineas...`));
+          }
 
           // 1) Prepare proofs (with light compression when needed) and upload first
           // so we can fail fast before writing to DB.
@@ -1227,7 +1503,7 @@ async function pageCapture() {
             occurred_at: isAggregateMode ? aggregateDtIso : dtIso,
             notes: finalNotes || null,
             currency: currentMode === "venta" ? String(currency.value || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY : DEFAULT_CURRENCY,
-            reported_by_employee_id: String(reportedBy.value || "") || null,
+            reported_by_employee_id: autoEmpId || String(reportedBy.value || "") || null,
             from_sku_id: currentMode === "traspaso_sku" ? fromSkuId : null,
             to_sku_id: currentMode === "traspaso_sku" ? toSkuId : null,
             from_quality_id: currentMode === "traspaso_calidad" ? String(fromQuality.value) : null,
@@ -1235,7 +1511,9 @@ async function pageCapture() {
           };
 
           const lines = [];
-          for (const ln of parsed) {
+          for (let iLine = 0; iLine < parsed.length; iLine++) {
+            await maybeYield(iLine + 1, SUBMIT_PARSE_YIELD_EVERY);
+            const ln = parsed[iLine];
             if (currentMode === "entrada") {
               lines.push({
                 sku_id: ln.sku_id,
@@ -1368,7 +1646,7 @@ async function pageCapture() {
           msg.replaceChildren(
             notice(
               "error",
-              `${e?.message ? String(e.message) : "No se pudo guardar el movimiento."} Si la red estuvo inestable, espera unos segundos y revisa Movimientos antes de reintentar.`
+              `${normalizeActorRoleError(String((e?.message || e) || "") ) || (e?.message ? String(e.message) : "No se pudo guardar el movimiento.")} Si la red estuvo inestable, espera unos segundos y revisa Movimientos antes de reintentar.`
             )
           );
         } finally {
@@ -1376,7 +1654,7 @@ async function pageCapture() {
         }
       },
     },
-    ["Guardar movimiento"]
+      ["Guardar movimiento"]
   );
 
   const card = h("div", { class: "col" }, [
@@ -1387,7 +1665,7 @@ async function pageCapture() {
       msg,
       pills.el,
       h("div", { class: "divider" }),
-      h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), field("Empleado", reportedBy)]),
+      h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), ...(Array.isArray(reportedByField) ? reportedByField : [reportedByField])]),
       h(
         "label",
         { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
@@ -1479,13 +1757,21 @@ async function pageMovements() {
         listWrap.appendChild(notice("warn", "Sin movimientos."));
       }
 
+      const movementCards = document.createDocumentFragment();
+
       for (let idx = 0; idx < movementRows.length; idx++) {
         const m = movementRows[idx];
         const lines = m.movement_lines || [];
         const att = m.movement_attachments || [];
 
-        const sumDelta = lines.reduce((acc, l) => acc + Number(l.delta_weight_kg || 0), 0);
-        const sumAbs = lines.reduce((acc, l) => acc + Math.abs(Number(l.delta_weight_kg || 0)), 0);
+        let sumDelta = 0;
+        let sumAbs = 0;
+        for (const l of lines) {
+          const d = Number(l.delta_weight_kg || 0);
+          sumDelta += d;
+          sumAbs += Math.abs(d);
+        }
+
         const isTransfer = m.movement_type === "traspaso_calidad" || m.movement_type === "traspaso_sku";
         const kgLabel = isTransfer ? `${fmtKg(sumAbs / 2)} kg movidos` : `${fmtKg(Math.abs(sumDelta))} kg`;
 
@@ -1527,29 +1813,13 @@ async function pageMovements() {
             btnView,
           ]),
           m.notes ? h("div", { class: "muted", text: m.notes }) : null,
-          lines.length
-            ? h("div", { class: "movement-lines-preview col" }, [
-                ...lines.map((l) => {
-                  const skuText = skuLabel(l.sku_id) || `${productName(l.product_id)} | ${qualityName(l.quality_id)}`;
-                  const d = Number(l.delta_weight_kg || 0);
-                  const kg = `${d >= 0 ? "+" : "-"}${fmtKg(Math.abs(d))} kg`;
-                  const pieces = [kg];
-                  if (l.boxes != null) pieces.push(`${Number(l.boxes || 0)} cajas`);
-                  if (m.movement_type === "venta" && l.line_total != null) {
-                    pieces.push(fmtMoney(Number(l.line_total || 0), m.currency || DEFAULT_CURRENCY));
-                  }
-                  return h("div", { class: "movement-line-item" }, [
-                    h("div", { class: "mono movement-line-sku", text: skuText }),
-                    h("div", { class: "spacer" }),
-                    h("div", { class: "mono movement-line-qty", text: pieces.join(" | ") }),
-                  ]);
-                }),
-              ])
-            : null,
+          buildMovementLinePreviewItems(lines, m.movement_type, m.currency || DEFAULT_CURRENCY),
         ]);
-        listWrap.appendChild(card);
+        movementCards.appendChild(card);
         await maybeYield(idx + 1, 10);
       }
+
+      listWrap.appendChild(movementCards);
 
       msg.replaceChildren();
       if (!canLoadMoreMovements) {
@@ -1582,7 +1852,7 @@ async function pageMovements() {
   await load();
 }
 
-	async function openMovementModal(m) {
+async function openMovementModal(m) {
 	  const backdrop = h("div", { class: "modal-backdrop" });
 	  const modal = h("div", { class: "modal col" });
 	  backdrop.appendChild(modal);
@@ -1594,39 +1864,49 @@ async function pageMovements() {
     if (e.target === backdrop) close();
   });
 
+	  const canDeleteMovement = isManager();
+	  const headerButtons = [];
+
+	  if (canDeleteMovement) {
+	    headerButtons.push(
+	      h(
+	        "button",
+	        {
+	          class: "btn btn-danger",
+	          type: "button",
+	          onclick: async () => {
+	            if (!confirm("Eliminar este movimiento? Esto ajustara el inventario y borrara la evidencia (si existe).")) return;
+	            const attachments = m.movement_attachments || [];
+	            const paths = attachments.map((a) => a.storage_path).filter(Boolean);
+	            const { error: delErr } = await supabase.rpc("delete_movement", { movement_id: m.id });
+	            if (delErr) return alert(delErr.message);
+
+	            // Best-effort Storage cleanup (does not affect inventory).
+	            if (paths.length > 0) {
+	              try {
+	                await supabase.storage.from("movement-proofs").remove(paths);
+	              } catch {
+	                // ignore
+	              }
+	            }
+	            close();
+	            await render();
+	          },
+	        },
+	        ["Eliminar"]
+	      )
+	    );
+	  }
+
+	  headerButtons.push(h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]));
+
 	  const header = h("div", { class: "row-wrap modal-header" }, [
 	    h("div", { class: "col", style: "gap: 4px" }, [
 	      h("div", { style: "font-weight: 820; font-size: 16px", text: movementLabel(m.movement_type) }),
 	      h("div", { class: "muted", text: formatOccurredAt(m.occurred_at) }),
 	    ]),
 	    h("div", { class: "spacer" }),
-	    h(
-	      "button",
-	      {
-	        class: "btn btn-danger",
-	        type: "button",
-	        onclick: async () => {
-	          if (!confirm("Eliminar este movimiento? Esto ajustara el inventario y borrara la evidencia (si existe).")) return;
-	          const attachments = m.movement_attachments || [];
-	          const paths = attachments.map((a) => a.storage_path).filter(Boolean);
-	          const { error: delErr } = await supabase.rpc("delete_movement", { movement_id: m.id });
-	          if (delErr) return alert(delErr.message);
-
-	          // Best-effort Storage cleanup (does not affect inventory).
-	          if (paths.length > 0) {
-	            try {
-	              await supabase.storage.from("movement-proofs").remove(paths);
-	            } catch {
-	              // ignore
-	            }
-	          }
-	          close();
-	          await render();
-	        },
-	      },
-	      ["Eliminar"]
-	    ),
-	    h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]),
+	    ...headerButtons,
 	  ]);
 
 	  const info = h("div", { class: "notice" }, [
@@ -1696,22 +1976,25 @@ async function pageMovements() {
     proofsWrap.appendChild(notice("warn", "Sin evidencia."));
   } else {
     proofsWrap.appendChild(notice("", "Cargando evidencia..."));
-    const signed = await Promise.all(
-      attachments.map(async (a) => {
-        const { data } = await supabase.storage.from("movement-proofs").createSignedUrl(a.storage_path, 60 * 30);
-        return { ...a, signedUrl: data?.signedUrl || null };
-      })
-    );
+    const signed = [];
+    for (let i = 0; i < attachments.length; i++) {
+      const a = attachments[i];
+      const { data } = await supabase.storage.from("movement-proofs").createSignedUrl(a.storage_path, 60 * 30);
+      signed.push({ ...a, signedUrl: data?.signedUrl || null });
+      await maybeYield(i + 1, 3);
+    }
+
+    const visibleSigned = signed.filter((a) => a.signedUrl);
+    const extraCount = Math.max(0, visibleSigned.length - 6);
     proofsWrap.replaceChildren(
       h("div", { class: "thumbgrid" }, [
-        ...signed
-          .filter((a) => a.signedUrl)
-          .map((a) =>
-            h("a", { href: a.signedUrl, target: "_blank", rel: "noreferrer" }, [
-              h("img", { class: "thumb", src: a.signedUrl, alt: a.original_filename || "proof" }),
-            ])
-          ),
-      ])
+        ...visibleSigned.slice(0, 6).map((a) =>
+          h("a", { href: a.signedUrl, target: "_blank", rel: "noreferrer" }, [
+            h("img", { class: "thumb", src: a.signedUrl, alt: a.original_filename || "proof" }),
+          ])
+        ),
+      ]),
+      extraCount > 0 ? h("div", { class: "muted", text: `+ ${extraCount} evidencia(s) adicional(es)` }) : null,
     );
   }
 
@@ -4057,6 +4340,7 @@ async function pageSettings() {
 
 async function render() {
   const r = route();
+  await ensureActorContextLoaded();
 
   if (!state.session) {
     if (r !== "login") navTo("login");
@@ -4075,6 +4359,12 @@ async function render() {
 
   if (r === "login") {
     navTo("capture");
+    return;
+  }
+
+  if (!currentRouteAllowed(r)) {
+    navTo("capture");
+    await pageCapture();
     return;
   }
 
@@ -4128,6 +4418,7 @@ async function refreshAfterResume() {
 async function boot() {
   try {
     await loadSession();
+    await loadActorContext();
   } catch (e) {
     layout("Error", notice("error", e?.message ? String(e.message) : "No se pudo cargar la sesion."));
   }
@@ -4135,6 +4426,19 @@ async function boot() {
   supabase.auth.onAuthStateChange(async (_event, session) => {
     state.session = session;
     state.masterLoaded = false;
+    state.actorLoaded = false;
+    if (session) await loadActorContext();
+    else {
+      state.actor = {
+        workspace_id: null,
+        role: "manager",
+        employee_id: null,
+        merma_limit_kg: null,
+        allow_all_traspaso_sku: true,
+        display_name: null,
+      };
+      state.actorLoaded = true;
+    }
     if (!session) navTo("login");
     await safeRender();
   });
