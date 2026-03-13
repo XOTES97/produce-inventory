@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.13.05";
-import { supabase } from "./supabaseClient.js?v=2026.03.13.05";
+import * as cfg from "./config.js?v=2026.03.14.03";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.03";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.13.05";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.03";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -32,11 +32,14 @@ const MOVEMENTS_PAGE_SIZE = 50;
 const UI_YIELD_EVERY = 60;
 const SUBMIT_PARSE_YIELD_EVERY = 2;
 const RESUME_REFRESH_MS = 15000;
-const MAX_PROOF_DIMENSION = 1500;
+const MAX_PROOF_DIMENSION = 1280;
 const PROOF_COMPRESS_QUALITY = 0.82;
-const PROOF_COMPRESS_BYTES_THRESHOLD = 5_000_000;
+const PROOF_COMPRESS_BYTES_THRESHOLD = 1_200_000;
 const MOVEMENT_LINES_PREVIEW_LIMIT = 12;
 const DEFAULT_PROOF_STAMP_ROWS = 2;
+const CAPTURE_DRAFT_AUTOSAVE_MS = 450;
+const CAPTURE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const CAPTURE_DRAFT_SCHEMA_VERSION = 1;
 
 const ROUTE_ACCESS = {
   employee: new Set(["capture"]),
@@ -77,7 +80,11 @@ const state = {
     display_name: null,
   },
   actorLoaded: false,
+  captureSubmitting: false,
 };
+
+const IS_MOBILE_DEVICE = typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(String(navigator.userAgent || ""));
+let isProofPickerOpen = false;
 
 const lookups = {
   productsById: new Map(),
@@ -96,8 +103,14 @@ const STORAGE_KEYS = {
   cutoffReportIncludeAdjustments: "produce_inventory.cutoff_report.include_adjustments",
   cutoffReportApplyDiscrepancy: "produce_inventory.cutoff_report.apply_discrepancy",
   hypotheticalAdjustments: "produce_inventory.hypothetical.adjustments",
+  captureDraft: "produce_inventory.capture.draft.v1",
 };
 const NETWORK_TIMEOUT_MS = 45000;
+
+function isAppInForeground() {
+  const visibility = String(document?.visibilityState || "visible");
+  return visibility === "visible" && !document.hidden;
+}
 
 function route() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
@@ -202,18 +215,11 @@ async function decodeImageForResize(file) {
         },
       };
     } catch {
-      // Fall back to <img> decoding below.
+      // createImageBitmap not available or file not decodable; continue uncompressed.
     }
   }
 
-  const dataUrl = await readFileAsDataURL(file);
-  const img = await readImageFromDataURL(dataUrl);
-  return {
-    source: img,
-    width: img.naturalWidth || img.width || 0,
-    height: img.naturalHeight || img.height || 0,
-    release: () => {},
-  };
+  return null;
 }
 
 function readImageFromDataURL(dataUrl) {
@@ -254,6 +260,9 @@ async function normalizeProofFile(file, { maxDimension = MAX_PROOF_DIMENSION, qu
   }
 
   const originalSize = Number(file.size);
+  if (IS_MOBILE_DEVICE) {
+    return { file, normalized: false, reason: "mobile-no-compress" };
+  }
   if (!Number.isFinite(originalSize) || originalSize <= PROOF_COMPRESS_BYTES_THRESHOLD) {
     return { file, normalized: false };
   }
@@ -297,11 +306,12 @@ async function normalizeProofFile(file, { maxDimension = MAX_PROOF_DIMENSION, qu
 
 async function prepareProofFiles(rawFiles, { label = "evidencia", onProgress } = {}) {
   const out = [];
-  for (let i = 0; i < rawFiles.length; i++) {
+  const files = Array.from(rawFiles || []);
+  for (let i = 0; i < files.length; i++) {
     const idx = i + 1;
-    onProgress?.(idx, rawFiles.length, label);
+    onProgress?.(idx, files.length, label);
     await maybeYield(idx, 1);
-    const raw = rawFiles[i];
+    const raw = files[i];
     const result = await normalizeProofFile(raw);
     const file = result.file || raw;
     out.push({
@@ -316,6 +326,7 @@ async function prepareProofFiles(rawFiles, { label = "evidencia", onProgress } =
 }
 
 function navTo(r) {
+  isProofPickerOpen = false;
   location.hash = `#/${r}`;
 }
 
@@ -336,6 +347,14 @@ function storageSet(key, value) {
   }
 }
 
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
 function storageGetJson(key, fallback = null) {
   const raw = storageGet(key, null);
   if (raw == null) return fallback;
@@ -346,6 +365,30 @@ function storageGetJson(key, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+function normalizeDraftValue(value, fallback = "") {
+  const raw = String(value || "").trim();
+  return raw || fallback;
+}
+
+function loadCaptureDraft() {
+  const data = storageGetJson(STORAGE_KEYS.captureDraft, null);
+  if (!data || typeof data !== "object") return null;
+  if (data.version !== CAPTURE_DRAFT_SCHEMA_VERSION) return null;
+  if (!data.timestamp || Date.now() - Number(data.timestamp) > CAPTURE_DRAFT_TTL_MS) {
+    storageRemove(STORAGE_KEYS.captureDraft);
+    return null;
+  }
+  return data;
+}
+
+function buildCaptureDraft(payload) {
+  return {
+    version: CAPTURE_DRAFT_SCHEMA_VERSION,
+    timestamp: Date.now(),
+    payload,
+  };
 }
 
 async function withTimeout(promise, ms, label) {
@@ -629,12 +672,6 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
     }
   }
 
-  function cleanupStuckBackdrops() {
-    // Defensive: if a modal backdrop gets "stuck" (rare on mobile after navigation),
-    // it will block taps on the bottom nav. Remove any leftovers.
-    for (const el of document.querySelectorAll(".modal-backdrop")) el.remove();
-  }
-
   const topbar = h("div", { class: "topbar" }, [
     h("div", { class: "topbar-inner" }, [
       h("div", { class: "brand-block" }, [
@@ -705,6 +742,10 @@ function field(labelText, inputEl) {
 
 function tableScroll(tableEl) {
   return h("div", { style: "overflow-x:auto; -webkit-overflow-scrolling: touch" }, [tableEl]);
+}
+
+function cleanupStuckBackdrops() {
+  for (const el of document.querySelectorAll(".modal-backdrop")) el.remove();
 }
 
 function optionList(items, { includeEmpty = true, emptyLabel = "Select..." } = {}) {
@@ -915,6 +956,18 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
     };
   }
 
+  function setValues(values = {}) {
+    if (values == null || typeof values !== "object") return;
+    skuSel.value = String(values.sku_id || "");
+    productSel.value = String(values.product_id || "");
+    qualitySel.value = String(values.quality_id || "");
+    weight.value = String(values.weight_kg != null ? values.weight_kg : "");
+    boxes.value = String(values.boxes != null ? values.boxes : "");
+    priceModel.value = String(values.price_model || "");
+    unitPrice.value = String(values.unit_price != null ? values.unit_price : "");
+    recalc();
+  }
+
   function setVisibilityForMode(nextMode) {
     currentMode = nextMode;
     row.querySelectorAll(".grid3").forEach((el) => (el.style.display = nextMode === "venta" ? "" : "none"));
@@ -971,7 +1024,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
     }
   }
 
-  return { el: row, get, setMode: setVisibilityForMode, setProductQuality };
+  return { el: row, get, setMode: setVisibilityForMode, setProductQuality, setValues };
 }
 
 function buildMovementLinePreviewItems(lines, movementType, currency, maxLines = MOVEMENT_LINES_PREVIEW_LIMIT) {
@@ -1049,7 +1102,7 @@ async function pageCapture() {
   });
   const batchClosePresetWrap = h("div", { class: "col" });
   const batchClosePresetButtons = [];
-  function setBatchClosePresetState(value) {
+function setBatchClosePresetState(value) {
     const normalized = String(value || "").trim();
     for (const btn of batchClosePresetButtons) {
       const preset = String(btn.dataset.preset || "").trim();
@@ -1063,6 +1116,7 @@ async function pageCapture() {
     aggregateCloseTimeEdited = manualOverride;
     storageSet(STORAGE_KEYS.captureBatchCloseTime, String(aggregateCloseTime.value || ""));
     setBatchClosePresetState(aggregateCloseTime.value);
+    queueDraftSave();
   }
   const batchClosePreset16 = h(
     "button",
@@ -1157,6 +1211,26 @@ async function pageCapture() {
   );
 
   const proofs = h("input", { type: "file", accept: "image/*", multiple: "multiple" });
+  proofs.addEventListener("pointerdown", () => {
+    isProofPickerOpen = true;
+  });
+  proofs.addEventListener("touchstart", () => {
+    isProofPickerOpen = true;
+  });
+  proofs.addEventListener("focus", () => {
+    isProofPickerOpen = true;
+  });
+  proofs.addEventListener("blur", () => {
+    isProofPickerOpen = false;
+  });
+  proofs.addEventListener("change", () => {
+    isProofPickerOpen = false;
+    queueDraftSave();
+  });
+  proofs.addEventListener("cancel", () => {
+    isProofPickerOpen = false;
+  });
+
   if (!isActorManager) {
     proofs.setAttribute("capture", "environment");
   }
@@ -1176,6 +1250,95 @@ async function pageCapture() {
   let currentMode = pills.get();
   const linesWrap = h("div", { class: "col" });
   const lineRows = [];
+  let draftRestoreInProgress = false;
+  let draftSaveTimer = null;
+  const MAX_DRAFT_LINES = 200;
+
+  function queueDraftSave() {
+    if (state.captureSubmitting || isProofPickerOpen) return;
+    if (draftRestoreInProgress) return;
+    if (draftSaveTimer) window.clearTimeout(draftSaveTimer);
+    draftSaveTimer = window.setTimeout(() => {
+      draftSaveTimer = null;
+      const draftLines = lineRows.length > MAX_DRAFT_LINES ? lineRows.slice(0, MAX_DRAFT_LINES) : lineRows;
+      const payload = {
+        movementType: currentMode,
+        occurredAt: normalizeDraftValue(occurredAt.value, localNowInputValue()),
+        lockOccurredAt: !!lockOccurredAt.checked,
+        aggregateMode: !!aggregateMode.checked,
+        aggregateCloseTime: normalizeDraftValue(aggregateCloseTime.value),
+        notes: normalizeDraftValue(notes.value),
+        currency: normalizeDraftValue(currency.value, DEFAULT_CURRENCY) || DEFAULT_CURRENCY,
+        fromQuality: normalizeDraftValue(fromQuality.value),
+        toQuality: normalizeDraftValue(toQuality.value),
+        fromSku: normalizeDraftValue(fromSku.value),
+        toSku: normalizeDraftValue(toSku.value),
+        adjustDir: normalizeDraftValue(adjustDir.value, "decrease"),
+        aggregateNoCutoff: !!aggregateNoCutoff.checked,
+        lines: draftLines.map((r) => r.get()),
+      };
+      storageSet(STORAGE_KEYS.captureDraft, JSON.stringify(buildCaptureDraft(payload)));
+    }, CAPTURE_DRAFT_AUTOSAVE_MS);
+  }
+
+  function clearCaptureDraft() {
+    storageRemove(STORAGE_KEYS.captureDraft);
+  }
+
+  function applyCaptureDraft() {
+    const wrapped = loadCaptureDraft();
+    if (!wrapped?.payload || typeof wrapped.payload !== "object") return;
+    const draft = wrapped.payload;
+    if (!draft) return;
+    const allowed = movementTypesForActor();
+    if (draft.movementType && allowed.includes(String(draft.movementType))) {
+      currentMode = String(draft.movementType);
+    }
+    draftRestoreInProgress = true;
+    try {
+      if (draft.occurredAt) occurredAt.value = String(draft.occurredAt);
+      lockOccurredAt.checked = !!draft.lockOccurredAt;
+      aggregateMode.checked = !!draft.aggregateMode;
+      aggregateCloseTime.value = normalizeDraftValue(draft.aggregateCloseTime, aggregateCloseTime.value);
+      notes.value = String(draft.notes || "");
+      currency.value = String(draft.currency || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY;
+      fromQuality.value = normalizeDraftValue(draft.fromQuality, "");
+      toQuality.value = normalizeDraftValue(draft.toQuality, "");
+      fromSku.value = normalizeDraftValue(draft.fromSku, "");
+      toSku.value = normalizeDraftValue(draft.toSku, "");
+      adjustDir.value = normalizeDraftValue(draft.adjustDir, "decrease") === "increase" ? "increase" : "decrease";
+      aggregateNoCutoff.checked = !!draft.aggregateNoCutoff;
+
+      const draftLines = Array.isArray(draft.lines) ? draft.lines : [];
+      if (draftLines.length > 0) {
+        while (lineRows.length < Math.min(draftLines.length, MAX_DRAFT_LINES)) addLine();
+        while (lineRows.length > Math.min(draftLines.length, MAX_DRAFT_LINES)) {
+          const lastRow = lineRows.pop();
+          if (lastRow?.el) lastRow.el.remove();
+        }
+        const target = Math.min(draftLines.length, lineRows.length);
+        for (let i = 0; i < target; i++) {
+          lineRows[i].setValues(draftLines[i]);
+        }
+      }
+
+      updateMode(currentMode);
+      setBatchClosePresetState(aggregateCloseTime.value);
+      aggregateCloseTime.disabled = !aggregateMode.checked;
+      batchCloseWrap.style.display = aggregateMode.checked ? "" : "none";
+      batchHint.style.display = aggregateMode.checked ? "" : "none";
+      aggregateNoCutoff.disabled = !aggregateMode.checked;
+      aggregateNoCutoffRow.style.display = aggregateMode.checked ? "" : "none";
+      if (aggregateMode.checked) {
+        const suggested = batchCloseDefaultTime(occurredAt.value);
+        batchClosePresetTodayDefault.dataset.preset = suggested;
+        setAggregateCloseTime(aggregateCloseTime.value || suggested, true);
+      }
+    } finally {
+      draftRestoreInProgress = false;
+      queueDraftSave();
+    }
+  }
 
 	  function applyTraspasoSkuBucket() {
 	    if (currentMode !== "traspaso_sku") return;
@@ -1201,10 +1364,10 @@ async function pageCapture() {
 	    traspasoSkuMeta.textContent = `Movimiento: ${left} -> ${right}`;
 	  }
 
-	  function addLine() {
-	    const row = buildLineRow({
-	      products,
-	      qualities,
+  function addLine() {
+    const row = buildLineRow({
+      products,
+      qualities,
       skus,
       mode: currentMode,
       onRemove: () => {
@@ -1212,12 +1375,14 @@ async function pageCapture() {
         if (idx >= 0) {
           lineRows.splice(idx, 1);
           row.el.remove();
+          queueDraftSave();
         }
       },
     });
     lineRows.push(row);
     linesWrap.appendChild(row.el);
     applyTraspasoSkuBucket();
+    queueDraftSave();
   }
 
   function updateMode(mt) {
@@ -1225,12 +1390,13 @@ async function pageCapture() {
     for (const row of lineRows) row.setMode(mt);
 
     traspasoSection.style.display = mt === "traspaso_calidad" ? "" : "none";
-	    traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
-	    ajusteSection.style.display = mt === "ajuste" ? "" : "none";
-	    currencySection.style.display = mt === "venta" ? "" : "none";
-	    applyTraspasoSkuBucket();
-	    updateTraspasoSkuMeta();
-	  }
+		    traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
+		    ajusteSection.style.display = mt === "ajuste" ? "" : "none";
+		    currencySection.style.display = mt === "venta" ? "" : "none";
+		    applyTraspasoSkuBucket();
+		    updateTraspasoSkuMeta();
+        queueDraftSave();
+		  }
 
   addLine();
 
@@ -1302,6 +1468,7 @@ async function pageCapture() {
   });
 
   function resetCaptureFormAfterSave() {
+    clearCaptureDraft();
     notes.value = "";
     proofs.value = "";
     if (lockOccurredAt.checked) {
@@ -1320,6 +1487,7 @@ async function pageCapture() {
     lineRows.length = 0;
     addLine();
     updateMode(currentMode);
+    queueDraftSave();
   }
 
   let isSubmitting = false;
@@ -1331,6 +1499,11 @@ async function pageCapture() {
       onclick: async () => {
         if (isSubmitting) return;
         msg.replaceChildren();
+        isProofPickerOpen = false;
+        if (draftSaveTimer) {
+          window.clearTimeout(draftSaveTimer);
+          draftSaveTimer = null;
+        }
 
         if (typeof navigator !== "undefined" && navigator.onLine === false) {
           msg.appendChild(notice("warn", "Sin conexion. Revisa internet e intenta de nuevo."));
@@ -1370,6 +1543,7 @@ async function pageCapture() {
         }
         const rawLines = lineRows.map((r) => r.get());
         const parsed = [];
+        await maybeYield(1, 1);
 
         const fromSkuId = String(fromSku.value || "");
         const toSkuId = String(toSku.value || "");
@@ -1446,12 +1620,14 @@ async function pageCapture() {
 
         const setSubmitting = (on) => {
           isSubmitting = on;
+          state.captureSubmitting = on;
           submitBtn.disabled = on;
           submitBtn.textContent = on ? "Guardando..." : "Guardar movimiento";
         };
 
         setSubmitting(true);
         msg.replaceChildren(notice("warn", rawLines.length > 1 ? "Validando lineas..." : "Validando linea..."));
+        await maybeYield(1, 1);
 
         let movementId = "";
         const uploaded = [];
@@ -1696,9 +1872,12 @@ async function pageCapture() {
       h("div", { class: "muted" }, [
         "Tip: Para papaya de 2da vendida por caja con peso variable, usa Venta + modelo Por caja, e ingresa cajas + kg.",
       ]),
-    ]),
+      ]),
   ]);
 
+  applyCaptureDraft();
+  card.addEventListener("input", () => queueDraftSave());
+  card.addEventListener("change", () => queueDraftSave());
   layout(ROUTE_TITLES.capture, card);
   updateMode(currentMode);
 }
@@ -4381,8 +4560,19 @@ async function render() {
 
 let renderRunning = false;
 let renderPending = false;
+let appVisibilityResumeScheduled = false;
+let isAppHidden = false;
 
 async function safeRender() {
+  if (!isAppInForeground() || isAppHidden) {
+    renderPending = true;
+    return;
+  }
+  if (isProofPickerOpen) {
+    renderPending = true;
+    return;
+  }
+  if (state.captureSubmitting) return;
   if (renderRunning) {
     renderPending = true;
     return;
@@ -4402,6 +4592,8 @@ async function safeRender() {
 
 let lastResumeRefreshAt = 0;
 async function refreshAfterResume() {
+  if (!isAppInForeground() || isAppHidden) return;
+  if (state.captureSubmitting) return;
   const now = Date.now();
   if (now - lastResumeRefreshAt < RESUME_REFRESH_MS) return;
   lastResumeRefreshAt = now;
@@ -4443,11 +4635,50 @@ async function boot() {
     await safeRender();
   });
 
+  const scheduleResumeRefresh = () => {
+    if (appVisibilityResumeScheduled || isAppHidden) return;
+    appVisibilityResumeScheduled = true;
+    requestAnimationFrame(async () => {
+      appVisibilityResumeScheduled = false;
+      await refreshAfterResume();
+    });
+  };
+
+  const recoverMobileUiState = () => {
+    isProofPickerOpen = false;
+    cleanupStuckBackdrops();
+  };
+
   window.addEventListener("hashchange", () => safeRender());
   window.addEventListener("online", () => safeRender());
-  window.addEventListener("focus", () => refreshAfterResume());
+  window.addEventListener("focus", () => {
+    recoverMobileUiState();
+    if (isAppInForeground()) {
+      isAppHidden = false;
+      scheduleResumeRefresh();
+    }
+  });
+  window.addEventListener("blur", () => {
+    isProofPickerOpen = false;
+  });
+  window.addEventListener("pagehide", () => {
+    isAppHidden = true;
+    isProofPickerOpen = false;
+  });
+  window.addEventListener("pageshow", () => {
+    recoverMobileUiState();
+    isAppHidden = false;
+    scheduleResumeRefresh();
+  });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refreshAfterResume();
+    const hidden = !isAppInForeground();
+    isAppHidden = hidden;
+    if (hidden) {
+      isProofPickerOpen = false;
+    }
+    if (!hidden && route() !== "capture") {
+      scheduleResumeRefresh();
+    }
   });
 
   if ("serviceWorker" in navigator) {
