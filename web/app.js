@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.19";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.19";
+import * as cfg from "./config.js?v=2026.03.14.20";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.20";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.19";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.20";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1264,25 +1264,46 @@ function movementTypePills({ onChange, allowed = movementTypesForActor(), initia
   let current = starting ? starting : (types[0]?.id || "venta");
   if (!allowedSet.has(current)) current = types[0]?.id || "venta";
 
-  const pills = types.map((t) =>
-    h(
+  const buttons = [];
+  const buttonById = new Map();
+
+  function applyCurrent(next) {
+    const normalized = String(next || "").trim();
+    current = allowedSet.has(normalized) ? normalized : (types[0]?.id || "venta");
+    for (const [id, btn] of buttonById.entries()) {
+      btn.setAttribute("aria-pressed", id === current ? "true" : "false");
+    }
+  }
+
+  for (const t of types) {
+    const btn = h(
       "button",
       {
         class: "pill",
         type: "button",
         "aria-pressed": t.id === current ? "true" : "false",
         onclick: () => {
-          current = t.id;
-          for (const p of pills) p.setAttribute("aria-pressed", "false");
-          pills.find((p) => p.textContent === t.label)?.setAttribute("aria-pressed", "true");
+          applyCurrent(t.id);
           onChange?.(current);
         },
       },
       [t.label]
-    )
-  );
+    );
+    buttons.push(btn);
+    buttonById.set(t.id, btn);
+  }
 
-  return { el: h("div", { class: "pillbar" }, pills), get: () => current };
+  applyCurrent(current);
+
+  return {
+    el: h("div", { class: "pillbar" }, buttons),
+    get: () => current,
+    set: (next, { silent = false } = {}) => {
+      const before = current;
+      applyCurrent(next);
+      if (!silent && current !== before) onChange?.(current);
+    },
+  };
 }
 
 function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCapture = false, getAllowedSkusForMode = null }) {
@@ -1731,14 +1752,15 @@ function setBatchClosePresetState(value) {
   }
 
   function shouldAutoSyncOccurredAt() {
+    if (isActorManager) return false;
     if (!isActive() || !isAppInForeground()) return false;
-    if (isActorManager && lockOccurredAt.checked) return false;
     if (occurredAtDirtyWhileUnlocked) return false;
     if (document.activeElement === occurredAt) return false;
     return true;
   }
 
   function syncOccurredAtIfNeeded({ force = false } = {}) {
+    if (isActorManager) return;
     if (!force && !shouldAutoSyncOccurredAt()) return;
     const nextValue = localNowInputValue();
     if (!force && String(occurredAt.value || "") === nextValue) return;
@@ -1946,12 +1968,20 @@ function setBatchClosePresetState(value) {
   let draftSaveTimer = null;
   const MAX_DRAFT_LINES = 200;
 
+  function getSelectedCaptureMode() {
+    const pillMode = String(pills.get() || "").trim();
+    if (availableMovementTypes.includes(pillMode)) return pillMode;
+    if (availableMovementTypes.includes(String(currentMode || "").trim())) return String(currentMode || "").trim();
+    return availableMovementTypes[0] || "venta";
+  }
+
   function queueDraftSave() {
     if (state.captureSubmitting || isProofPickerOpen) return;
     if (draftRestoreInProgress) return;
     if (draftSaveTimer) window.clearTimeout(draftSaveTimer);
     draftSaveTimer = window.setTimeout(() => {
       draftSaveTimer = null;
+      currentMode = getSelectedCaptureMode();
       const draftLines = lineRows.length > MAX_DRAFT_LINES ? lineRows.slice(0, MAX_DRAFT_LINES) : lineRows;
       const payload = {
         movementType: currentMode,
@@ -1986,9 +2016,10 @@ function setBatchClosePresetState(value) {
     const draft = wrapped.payload;
     if (!draft) return;
     const allowed = availableMovementTypes;
-    if (draft.movementType && allowed.includes(String(draft.movementType))) {
-      currentMode = String(draft.movementType);
-    }
+      if (draft.movementType && allowed.includes(String(draft.movementType))) {
+        currentMode = String(draft.movementType);
+        pills.set(currentMode, { silent: true });
+      }
     draftRestoreInProgress = true;
     try {
       if (isActorManager && draft.lockOccurredAt && draft.occurredAt) {
@@ -2123,6 +2154,7 @@ function setBatchClosePresetState(value) {
   }
 
   function updateMode(mt) {
+    pills.set(mt, { silent: true });
     currentMode = mt;
     for (const row of lineRows) row.setMode(mt);
 
@@ -2206,14 +2238,16 @@ function setBatchClosePresetState(value) {
     updateFixedDatetimeWarning();
     queueDraftSave();
   });
-  const occurredAtAutoSyncTimer = window.setInterval(() => {
-    if (!isActive()) {
-      window.clearInterval(occurredAtAutoSyncTimer);
-      return;
-    }
-    syncOccurredAtIfNeeded();
-  }, OCCURRED_AT_AUTO_SYNC_MS);
-  syncOccurredAtIfNeeded({ force: true });
+  if (!isActorManager) {
+    const occurredAtAutoSyncTimer = window.setInterval(() => {
+      if (!isActive()) {
+        window.clearInterval(occurredAtAutoSyncTimer);
+        return;
+      }
+      syncOccurredAtIfNeeded();
+    }, OCCURRED_AT_AUTO_SYNC_MS);
+    syncOccurredAtIfNeeded({ force: true });
+  }
   setBatchClosePresetState(aggregateCloseTime.value);
   updateFixedDatetimeWarning();
   aggregateCloseTime.disabled = !isActorManager || !aggregateMode.checked;
@@ -2293,7 +2327,9 @@ function setBatchClosePresetState(value) {
           msg.appendChild(notice("error", "Fecha/hora invalida."));
           return;
         }
-        if (!availableMovementTypes.includes(currentMode)) {
+        const submitMode = getSelectedCaptureMode();
+        currentMode = submitMode;
+        if (!availableMovementTypes.includes(submitMode)) {
           msg.appendChild(notice("error", "No tienes permiso para ese tipo de movimiento."));
           return;
         }
@@ -2329,7 +2365,7 @@ function setBatchClosePresetState(value) {
         const fromSkuObj = fromSkuId ? skuById(fromSkuId) : null;
         const toSkuObj = toSkuId ? skuById(toSkuId) : null;
 
-        if (currentMode === "traspaso_sku") {
+        if (submitMode === "traspaso_sku") {
           if (!fromSkuObj || !toSkuObj) {
             msg.appendChild(notice("error", "Traspaso SKU requiere De SKU y A SKU."));
             return;
@@ -2346,19 +2382,19 @@ function setBatchClosePresetState(value) {
           const product_id = ln.product_id;
           const quality_id = ln.quality_id;
           const w = Number(ln.weight_kg);
-          if (!isActorManager && currentMode !== "traspaso_sku" && !sku_id) {
+          if (!isActorManager && submitMode !== "traspaso_sku" && !sku_id) {
             return msg.appendChild(notice("error", `Linea ${i + 1}: elige un SKU.`));
           }
-          if (currentMode !== "traspaso_sku" && !product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
-          if (currentMode !== "traspaso_calidad" && currentMode !== "traspaso_sku" && !quality_id) {
+          if (submitMode !== "traspaso_sku" && !product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
+          if (submitMode !== "traspaso_calidad" && submitMode !== "traspaso_sku" && !quality_id) {
             return msg.appendChild(notice("error", `Linea ${i + 1}: elige una calidad.`));
           }
           if (!Number.isFinite(w) || w <= 0) return msg.appendChild(notice("error", `Linea ${i + 1}: kg invalido.`));
 
           const row = { sku_id: sku_id || null, product_id: product_id || null, weight_kg: w };
-          if (currentMode !== "traspaso_calidad") row.quality_id = quality_id || null;
+          if (submitMode !== "traspaso_calidad") row.quality_id = quality_id || null;
 
-          if (currentMode === "venta") {
+          if (submitMode === "venta") {
             const pm = !isActorManager ? employeeSalePriceModelForSkuId(sku_id) : ln.price_model;
             const up = Number(ln.unit_price);
             const b = ln.boxes ? Number(ln.boxes) : null;
@@ -2386,7 +2422,7 @@ function setBatchClosePresetState(value) {
           parsed.push(row);
         }
 
-        if (currentMode === "traspaso_calidad") {
+        if (submitMode === "traspaso_calidad") {
           if (!fromQuality.value || !toQuality.value) {
             msg.appendChild(notice("error", "Traspaso requiere De calidad y A calidad."));
             return;
@@ -2463,22 +2499,22 @@ function setBatchClosePresetState(value) {
           // 2) Build DB rows (signed deltas)
           const movement = {
             id: movementId,
-            movement_type: currentMode,
+            movement_type: submitMode,
             occurred_at: isAggregateMode ? aggregateDtIso : dtIso,
             notes: finalNotes || null,
-            currency: currentMode === "venta" ? String(currency.value || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY : DEFAULT_CURRENCY,
+            currency: submitMode === "venta" ? String(currency.value || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY : DEFAULT_CURRENCY,
             reported_by_employee_id: autoEmpId || String(reportedBy.value || "") || null,
-            from_sku_id: currentMode === "traspaso_sku" ? fromSkuId : null,
-            to_sku_id: currentMode === "traspaso_sku" ? toSkuId : null,
-            from_quality_id: currentMode === "traspaso_calidad" ? String(fromQuality.value) : null,
-            to_quality_id: currentMode === "traspaso_calidad" ? String(toQuality.value) : null,
+            from_sku_id: submitMode === "traspaso_sku" ? fromSkuId : null,
+            to_sku_id: submitMode === "traspaso_sku" ? toSkuId : null,
+            from_quality_id: submitMode === "traspaso_calidad" ? String(fromQuality.value) : null,
+            to_quality_id: submitMode === "traspaso_calidad" ? String(toQuality.value) : null,
           };
 
           const lines = [];
           for (let iLine = 0; iLine < parsed.length; iLine++) {
             await maybeYield(iLine + 1, SUBMIT_PARSE_YIELD_EVERY);
             const ln = parsed[iLine];
-            if (currentMode === "entrada") {
+            if (submitMode === "entrada") {
               lines.push({
                 sku_id: ln.sku_id,
                 product_id: ln.product_id,
@@ -2489,7 +2525,7 @@ function setBatchClosePresetState(value) {
                 unit_price: null,
                 line_total: null,
               });
-            } else if (currentMode === "venta") {
+            } else if (submitMode === "venta") {
               lines.push({
                 sku_id: ln.sku_id,
                 product_id: ln.product_id,
@@ -2500,7 +2536,7 @@ function setBatchClosePresetState(value) {
                 unit_price: ln.unit_price,
                 line_total: ln.line_total,
               });
-            } else if (currentMode === "merma") {
+            } else if (submitMode === "merma") {
               lines.push({
                 sku_id: ln.sku_id,
                 product_id: ln.product_id,
@@ -2511,7 +2547,7 @@ function setBatchClosePresetState(value) {
                 unit_price: null,
                 line_total: null,
               });
-            } else if (currentMode === "ajuste") {
+            } else if (submitMode === "ajuste") {
               const sign = adjustDir.value === "increase" ? 1 : -1;
               lines.push({
                 sku_id: ln.sku_id,
@@ -2523,7 +2559,7 @@ function setBatchClosePresetState(value) {
                 unit_price: null,
                 line_total: null,
               });
-            } else if (currentMode === "traspaso_calidad") {
+            } else if (submitMode === "traspaso_calidad") {
               const fromQ = String(fromQuality.value);
               const toQ = String(toQuality.value);
               lines.push({
@@ -2546,7 +2582,7 @@ function setBatchClosePresetState(value) {
                 unit_price: null,
                 line_total: null,
               });
-            } else if (currentMode === "traspaso_sku") {
+            } else if (submitMode === "traspaso_sku") {
               lines.push({
                 sku_id: fromSkuObj.id,
                 product_id: fromSkuObj.product_id,
@@ -2584,7 +2620,7 @@ function setBatchClosePresetState(value) {
 
           const successText = `Movimiento guardado ${String(newId).slice(0, 8)}...`;
           state.captureFlashNotice = { kind: "ok", text: successText };
-          state.captureNextMode = currentMode;
+          state.captureNextMode = submitMode;
           msg.replaceChildren(notice("ok", successText));
           resetCaptureFormAfterSave();
           shouldRefreshCaptureAfterSuccess = true;
@@ -2596,7 +2632,7 @@ function setBatchClosePresetState(value) {
               if (existing?.id) {
                 const successText = `Movimiento guardado ${String(existing.id).slice(0, 8)}...`;
                 state.captureFlashNotice = { kind: "ok", text: successText };
-                state.captureNextMode = currentMode;
+                state.captureNextMode = submitMode;
                 msg.replaceChildren(notice("ok", successText));
                 resetCaptureFormAfterSave();
                 shouldRefreshCaptureAfterSuccess = true;
