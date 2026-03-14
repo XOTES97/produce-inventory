@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.20";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.20";
+import * as cfg from "./config.js?v=2026.03.14.24";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.24";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.20";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.24";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -931,6 +931,29 @@ function skuLabel(id) {
   if (!s) return "";
   const code = Number.isFinite(s.code) ? String(s.code) : "";
   return code ? `${code} ${s.name}` : String(s.name || "");
+}
+
+function movementShortId(movementOrId, explicitReferenceNumber = null) {
+  const referenceNumber =
+    explicitReferenceNumber != null
+      ? explicitReferenceNumber
+      : movementOrId && typeof movementOrId === "object"
+        ? movementOrId.reference_number
+        : null;
+  const refNum = Number(referenceNumber);
+  if (Number.isFinite(refNum) && refNum > 0) {
+    return `FST${Math.trunc(refNum)}`;
+  }
+
+  const rawId =
+    movementOrId && typeof movementOrId === "object"
+      ? movementOrId.id
+      : movementOrId;
+  const raw = String(rawId || "")
+    .replace(/-/g, "")
+    .slice(0, 8)
+    .toUpperCase();
+  return raw ? `FST-${raw}` : "FST-";
 }
 
 async function loadSession() {
@@ -2618,7 +2641,12 @@ function setBatchClosePresetState(value) {
           );
           if (rpcErr) throw rpcErr;
 
-          const successText = `Movimiento guardado ${String(newId).slice(0, 8)}...`;
+          const { data: savedMovement } = await supabase
+            .from("movements")
+            .select("id,reference_number")
+            .eq("id", newId)
+            .maybeSingle();
+          const successText = `Guardado: ${movementLabel(submitMode)} | ID ${movementShortId(savedMovement || newId)}`;
           state.captureFlashNotice = { kind: "ok", text: successText };
           state.captureNextMode = submitMode;
           msg.replaceChildren(notice("ok", successText));
@@ -2628,9 +2656,13 @@ function setBatchClosePresetState(value) {
           // If timeout happened but insert actually reached DB, avoid duplicate capture on retry.
           if (movementId) {
             try {
-              const { data: existing } = await supabase.from("movements").select("id").eq("id", movementId).maybeSingle();
+              const { data: existing } = await supabase
+                .from("movements")
+                .select("id,reference_number")
+                .eq("id", movementId)
+                .maybeSingle();
               if (existing?.id) {
-                const successText = `Movimiento guardado ${String(existing.id).slice(0, 8)}...`;
+                const successText = `Guardado: ${movementLabel(submitMode)} | ID ${movementShortId(existing)}`;
                 state.captureFlashNotice = { kind: "ok", text: successText };
                 state.captureNextMode = submitMode;
                 msg.replaceChildren(notice("ok", successText));
@@ -2779,7 +2811,7 @@ async function pageMovements(pageCtx) {
       const { data, error } = await supabase
         .from("movements")
         .select(
-          "id,movement_type,occurred_at,notes,currency,reported_by_employee_id,from_sku_id,to_sku_id,from_quality_id,to_quality_id,created_at," +
+          "id,reference_number,movement_type,occurred_at,notes,currency,reported_by_employee_id,from_sku_id,to_sku_id,from_quality_id,to_quality_id,created_at," +
             "movement_lines(id,sku_id,product_id,quality_id,delta_weight_kg,boxes,price_model,unit_price,line_total)," +
             "movement_attachments(id,storage_path,original_filename,content_type,size_bytes)"
         )
@@ -2869,7 +2901,7 @@ async function pageMovements(pageCtx) {
             h("div", { class: "col", style: "gap: 4px" }, [
               h("div", { style: "font-weight: 760", text: title }),
               h("div", { class: "muted", text: subtitle }),
-              h("div", { class: "muted mono", text: `ID ${String(m.id).slice(0, 8)}...` }),
+              h("div", { class: "muted mono", text: `ID ${movementShortId(m)}` }),
             ]),
             h("div", { class: "spacer" }),
             btnView,
@@ -2976,7 +3008,7 @@ async function openMovementModal(m, pageCtx) {
 
   const info = h("div", { class: "notice" }, [
     h("div", { class: "row-wrap" }, [
-      h("div", { class: "muted", text: `ID: ${String(m.id).slice(0, 8)}...` }),
+      h("div", { class: "muted mono", text: `ID: ${movementShortId(m)}` }),
       h("div", { class: "spacer" }),
       m.movement_type === "venta"
         ? h("div", { class: "muted", text: `Moneda: ${m.currency || DEFAULT_CURRENCY}` })
