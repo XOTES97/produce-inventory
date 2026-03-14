@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.12";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.12";
+import * as cfg from "./config.js?v=2026.03.14.13";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.13";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.12";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.13";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -501,6 +501,16 @@ async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evi
     let closed = false;
 
     const stopStream = () => {
+      try {
+        video.pause();
+      } catch {
+        // ignore
+      }
+      try {
+        video.srcObject = null;
+      } catch {
+        // ignore
+      }
       if (!stream) return;
       for (const track of stream.getTracks()) {
         try {
