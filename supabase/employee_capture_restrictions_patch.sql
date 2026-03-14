@@ -18,6 +18,42 @@ create table if not exists public.workspace_sale_sku_rules (
 create index if not exists workspace_sale_sku_rules_workspace_idx on public.workspace_sale_sku_rules(workspace_id);
 create index if not exists workspace_sale_sku_rules_sku_idx on public.workspace_sale_sku_rules(sku_id);
 
+alter table public.movements
+  add column if not exists reference_number bigint;
+
+create sequence if not exists public.movement_reference_number_seq;
+
+alter table public.movements
+  alter column reference_number set default nextval('public.movement_reference_number_seq');
+
+with movement_ref_seed as (
+  select coalesce(max(reference_number), 0) as max_ref
+  from public.movements
+),
+movement_ref_backfill as (
+  select
+    m.id,
+    (select max_ref from movement_ref_seed) + row_number() over (order by m.occurred_at asc, m.created_at asc, m.id asc) as next_ref
+  from public.movements m
+  where m.reference_number is null
+)
+update public.movements m
+set reference_number = b.next_ref
+from movement_ref_backfill b
+where m.id = b.id;
+
+select setval(
+  'public.movement_reference_number_seq',
+  coalesce((select max(reference_number) from public.movements), 0) + 1,
+  false
+);
+
+alter table public.movements
+  alter column reference_number set not null;
+
+create unique index if not exists movements_reference_number_idx
+  on public.movements (reference_number);
+
 drop trigger if exists trg_workspace_sale_sku_rules_set_updated_at on public.workspace_sale_sku_rules;
 create trigger trg_workspace_sale_sku_rules_set_updated_at
 before update on public.workspace_sale_sku_rules
@@ -97,6 +133,20 @@ as $$
   );
 $$;
 
+create or replace function public.actor_can_access_movement(target_movement_id uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select exists (
+    select 1
+    from public.movements m
+    where m.id = target_movement_id
+      and public.actor_can_access_owner(m.owner_id)
+  );
+$$;
+
 create or replace function public.current_actor_allow_all_sale_sku()
 returns boolean
 language sql
@@ -144,6 +194,28 @@ as $$
 $$;
 
 alter table public.workspace_sale_sku_rules enable row level security;
+alter table public.workspaces enable row level security;
+
+drop policy if exists workspaces_select_workspace on public.workspaces;
+create policy workspaces_select_workspace
+on public.workspaces for select
+to authenticated
+using (
+  id = public.current_actor_workspace_id()
+);
+
+drop policy if exists workspaces_update_manager on public.workspaces;
+create policy workspaces_update_manager
+on public.workspaces for update
+to authenticated
+using (
+  public.current_actor_role() = 'manager'
+  and id = public.current_actor_workspace_id()
+)
+with check (
+  public.current_actor_role() = 'manager'
+  and id = public.current_actor_workspace_id()
+);
 
 drop policy if exists workspace_sale_sku_rules_select_workspace on public.workspace_sale_sku_rules;
 create policy workspace_sale_sku_rules_select_workspace
@@ -190,6 +262,46 @@ using (
 );
 
 grant select, insert, update, delete on table public.workspace_sale_sku_rules to authenticated;
+
+drop policy if exists movement_lines_insert_own on public.movement_lines;
+create policy movement_lines_insert_own
+on public.movement_lines for insert
+to authenticated
+with check (
+  public.actor_can_access_movement(movement_id)
+  and (
+    sku_id is null
+    or exists (
+      select 1
+      from public.skus s
+      where s.id = sku_id
+        and public.actor_can_access_owner(s.owner_id)
+        and s.product_id = product_id
+        and s.quality_id = quality_id
+    )
+  )
+  and exists (
+    select 1
+    from public.products p
+    where p.id = product_id
+      and public.actor_can_access_owner(p.owner_id)
+  )
+  and exists (
+    select 1
+    from public.qualities q
+    where q.id = quality_id
+      and public.actor_can_access_owner(q.owner_id)
+  )
+);
+
+drop policy if exists movement_attachments_insert_own on public.movement_attachments;
+create policy movement_attachments_insert_own
+on public.movement_attachments for insert
+to authenticated
+with check (
+  public.actor_can_access_owner(owner_id)
+  and public.actor_can_access_movement(movement_id)
+);
 
 create or replace function public.create_movement_with_lines(
   movement jsonb,

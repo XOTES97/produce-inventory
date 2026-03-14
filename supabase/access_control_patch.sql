@@ -190,6 +190,20 @@ as $$
   );
 $$;
 
+create or replace function public.actor_can_access_movement(target_movement_id uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select exists (
+    select 1
+    from public.movements m
+    where m.id = target_movement_id
+      and public.actor_can_access_owner(m.owner_id)
+  );
+$$;
+
 create or replace function public.actor_can_traspaso_sku(from_sku_id uuid, to_sku_id uuid)
 returns boolean
 language sql
@@ -297,6 +311,42 @@ alter table public.physical_cutoffs alter column owner_id set default auth.uid()
 alter table public.physical_cutoff_lines alter column owner_id set default auth.uid();
 alter table public.physical_cutoff_attachments alter column owner_id set default auth.uid();
 
+alter table public.movements
+  add column if not exists reference_number bigint;
+
+create sequence if not exists public.movement_reference_number_seq;
+
+alter table public.movements
+  alter column reference_number set default nextval('public.movement_reference_number_seq');
+
+with movement_ref_seed as (
+  select coalesce(max(reference_number), 0) as max_ref
+  from public.movements
+),
+movement_ref_backfill as (
+  select
+    m.id,
+    (select max_ref from movement_ref_seed) + row_number() over (order by m.occurred_at asc, m.created_at asc, m.id asc) as next_ref
+  from public.movements m
+  where m.reference_number is null
+)
+update public.movements m
+set reference_number = b.next_ref
+from movement_ref_backfill b
+where m.id = b.id;
+
+select setval(
+  'public.movement_reference_number_seq',
+  coalesce((select max(reference_number) from public.movements), 0) + 1,
+  false
+);
+
+alter table public.movements
+  alter column reference_number set not null;
+
+create unique index if not exists movements_reference_number_idx
+  on public.movements (reference_number);
+
 alter table public.products enable row level security;
 alter table public.qualities enable row level security;
 alter table public.employees enable row level security;
@@ -304,9 +354,31 @@ alter table public.skus enable row level security;
 alter table public.movements enable row level security;
 alter table public.movement_lines enable row level security;
 alter table public.movement_attachments enable row level security;
+alter table public.workspaces enable row level security;
 alter table public.workspace_users enable row level security;
 alter table public.workspace_sale_sku_rules enable row level security;
 alter table public.workspace_traspaso_sku_rules enable row level security;
+
+drop policy if exists workspaces_select_workspace on public.workspaces;
+create policy workspaces_select_workspace
+on public.workspaces for select
+to authenticated
+using (
+  id = public.current_actor_workspace_id()
+);
+
+drop policy if exists workspaces_update_manager on public.workspaces;
+create policy workspaces_update_manager
+on public.workspaces for update
+to authenticated
+using (
+  public.current_actor_role() = 'manager'
+  and id = public.current_actor_workspace_id()
+)
+with check (
+  public.current_actor_role() = 'manager'
+  and id = public.current_actor_workspace_id()
+);
 
 -- Workspace users can read users in same workspace (for role + limits).
 drop policy if exists workspace_users_select_workspace on public.workspace_users;
@@ -600,7 +672,7 @@ create policy movement_lines_insert_own
 on public.movement_lines for insert
 to authenticated
 with check (
-  public.actor_can_access_owner((select owner_id from public.movements m where m.id = movement_id))
+  public.actor_can_access_movement(movement_id)
   and (
     sku_id is null
     or exists (
@@ -650,7 +722,7 @@ on public.movement_attachments for insert
 to authenticated
 with check (
   public.actor_can_access_owner(owner_id)
-  and public.actor_can_access_owner((select owner_id from public.movements m where m.id = movement_id))
+  and public.actor_can_access_movement(movement_id)
 );
 
 drop policy if exists movement_attachments_delete_own on public.movement_attachments;
@@ -836,13 +908,19 @@ drop policy if exists storage_upload_own_movement_proofs on storage.objects;
 create policy storage_upload_own_movement_proofs
 on storage.objects for insert
 to authenticated
-with check (bucket_id = 'movement-proofs' and owner = auth.uid());
+with check (
+  bucket_id = 'movement-proofs'
+  and (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+);
 
 drop policy if exists storage_upload_own_cutoff_proofs on storage.objects;
 create policy storage_upload_own_cutoff_proofs
 on storage.objects for insert
 to authenticated
-with check (bucket_id = 'physical-cutoff-proofs' and owner = auth.uid());
+with check (
+  bucket_id = 'physical-cutoff-proofs'
+  and (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+);
 
 drop policy if exists storage_delete_own_movement_proofs on storage.objects;
 create policy storage_delete_own_movement_proofs
