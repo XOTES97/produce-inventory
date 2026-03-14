@@ -246,15 +246,8 @@ create policy workspace_users_select_workspace
 on public.workspace_users for select
 to authenticated
 using (
-  exists (
-    select 1
-    from public.workspace_users wu
-    where wu.user_id = auth.uid()
-      and (
-        wu.user_id = workspace_users.user_id
-        or wu.workspace_id = workspace_users.workspace_id
-      )
-  )
+  user_id = auth.uid()
+  or workspace_id = public.current_actor_workspace_id()
 );
 
 drop policy if exists workspace_users_insert_manager on public.workspace_users;
@@ -806,6 +799,7 @@ as $$
 declare
   v_movement_id uuid;
   v_employee_id uuid;
+  v_actor_employee_id uuid;
   v_mt public.movement_type;
   v_from_sku_id uuid;
   v_to_sku_id uuid;
@@ -840,12 +834,64 @@ begin
   v_to_sku_id := nullif(movement->>'to_sku_id', '')::uuid;
   v_actor_role := public.current_actor_role();
   v_actor_workspace_id := public.current_actor_workspace_id();
+  v_actor_employee_id := public.current_actor_employee_id();
   v_actor_merma_limit := public.current_actor_merma_limit_kg();
   v_actor_allow_all_traspaso := public.current_actor_allow_all_traspaso_sku();
 
   if v_actor_role = 'employee' then
+    if v_actor_employee_id is null then
+      raise exception 'employee_not_linked';
+    end if;
+    if v_employee_id is null then
+      v_employee_id := v_actor_employee_id;
+    elsif v_employee_id <> v_actor_employee_id then
+      raise exception 'employee_must_match_linked_employee';
+    end if;
     if v_mt not in ('venta', 'merma', 'traspaso_sku') then
       raise exception 'employee_only_limited_types';
+    end if;
+    if v_mt = 'venta' then
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        where nullif(l->>'sku_id', '') is null
+      ) then
+        raise exception 'employee_sale_requires_sku';
+      end if;
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        left join public.skus s on s.id = nullif(l->>'sku_id', '')::uuid
+        where s.id is null
+          or not public.actor_can_access_owner(s.owner_id)
+          or s.default_price_model is distinct from 'per_box'::public.price_model
+          or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
+          or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
+          or coalesce(nullif(l->>'price_model', '')::public.price_model, 'per_kg'::public.price_model) <> 'per_box'::public.price_model
+          or coalesce(nullif(l->>'boxes', '')::integer, 0) <= 0
+      ) then
+        raise exception 'employee_sale_only_per_box_skus';
+      end if;
+    end if;
+    if v_mt = 'merma' then
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        where nullif(l->>'sku_id', '') is null
+      ) then
+        raise exception 'employee_merma_requires_sku';
+      end if;
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        left join public.skus s on s.id = nullif(l->>'sku_id', '')::uuid
+        where s.id is null
+          or not public.actor_can_access_owner(s.owner_id)
+          or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
+          or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
+      ) then
+        raise exception 'employee_merma_requires_sku';
+      end if;
     end if;
     if v_mt = 'merma' and v_actor_merma_limit is not null then
       select coalesce(sum(abs((l->>'delta_weight_kg')::numeric)), 0)
@@ -1101,4 +1147,3 @@ grant select, insert, update, delete on table public.workspace_traspaso_sku_rule
 grant select, insert, update, delete on table public.physical_cutoffs to authenticated;
 grant select, insert, update, delete on table public.physical_cutoff_lines to authenticated;
 grant select, insert, delete on table public.physical_cutoff_attachments to authenticated;
-

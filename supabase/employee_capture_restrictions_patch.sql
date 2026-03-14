@@ -1,0 +1,312 @@
+-- One-time patch for existing Supabase projects.
+-- Replaces create_movement_with_lines() with stricter employee capture rules:
+-- - employee sales require per-box SKUs
+-- - employee merma requires SKU-linked lines
+-- - employee movements must use the linked employee_id
+-- - employee proof photo remains mandatory
+
+create or replace function public.create_movement_with_lines(
+  movement jsonb,
+  lines jsonb,
+  attachments jsonb
+)
+returns uuid
+language plpgsql
+security invoker
+as $$
+declare
+  v_movement_id uuid;
+  v_employee_id uuid;
+  v_actor_employee_id uuid;
+  v_mt public.movement_type;
+  v_from_sku_id uuid;
+  v_to_sku_id uuid;
+  v_sum_delta numeric;
+  v_sum_from numeric;
+  v_sum_to numeric;
+  v_actor_role public.app_role;
+  v_actor_workspace_id uuid;
+  v_actor_merma_limit numeric;
+  v_actor_allow_all_traspaso boolean;
+  v_total_merma numeric;
+begin
+  if movement is null or jsonb_typeof(movement) <> 'object' then
+    raise exception 'movement_required';
+  end if;
+
+  if lines is null or jsonb_typeof(lines) <> 'array' or jsonb_array_length(lines) < 1 then
+    raise exception 'lines_required';
+  end if;
+
+  if attachments is null then
+    attachments := '[]'::jsonb;
+  end if;
+  if jsonb_typeof(attachments) <> 'array' then
+    raise exception 'attachments_invalid';
+  end if;
+
+  v_movement_id := coalesce(nullif(movement->>'id', '')::uuid, gen_random_uuid());
+  v_employee_id := nullif(movement->>'reported_by_employee_id', '')::uuid;
+  v_mt := (movement->>'movement_type')::public.movement_type;
+  v_from_sku_id := nullif(movement->>'from_sku_id', '')::uuid;
+  v_to_sku_id := nullif(movement->>'to_sku_id', '')::uuid;
+  v_actor_role := public.current_actor_role();
+  v_actor_workspace_id := public.current_actor_workspace_id();
+  v_actor_employee_id := public.current_actor_employee_id();
+  v_actor_merma_limit := public.current_actor_merma_limit_kg();
+  v_actor_allow_all_traspaso := public.current_actor_allow_all_traspaso_sku();
+
+  if v_actor_role = 'employee' then
+    if v_actor_employee_id is null then
+      raise exception 'employee_not_linked';
+    end if;
+    if v_employee_id is null then
+      v_employee_id := v_actor_employee_id;
+    elsif v_employee_id <> v_actor_employee_id then
+      raise exception 'employee_must_match_linked_employee';
+    end if;
+    if v_mt not in ('venta', 'merma', 'traspaso_sku') then
+      raise exception 'employee_only_limited_types';
+    end if;
+    if v_mt = 'venta' then
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        where nullif(l->>'sku_id', '') is null
+      ) then
+        raise exception 'employee_sale_requires_sku';
+      end if;
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        left join public.skus s on s.id = nullif(l->>'sku_id', '')::uuid
+        where s.id is null
+          or not public.actor_can_access_owner(s.owner_id)
+          or s.default_price_model is distinct from 'per_box'::public.price_model
+          or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
+          or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
+          or coalesce(nullif(l->>'price_model', '')::public.price_model, 'per_kg'::public.price_model) <> 'per_box'::public.price_model
+          or coalesce(nullif(l->>'boxes', '')::integer, 0) <= 0
+      ) then
+        raise exception 'employee_sale_only_per_box_skus';
+      end if;
+    end if;
+    if v_mt = 'merma' then
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        where nullif(l->>'sku_id', '') is null
+      ) then
+        raise exception 'employee_merma_requires_sku';
+      end if;
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        left join public.skus s on s.id = nullif(l->>'sku_id', '')::uuid
+        where s.id is null
+          or not public.actor_can_access_owner(s.owner_id)
+          or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
+          or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
+      ) then
+        raise exception 'employee_merma_requires_sku';
+      end if;
+    end if;
+    if v_mt = 'merma' and v_actor_merma_limit is not null then
+      select coalesce(sum(abs((l->>'delta_weight_kg')::numeric)), 0)
+        into v_total_merma
+      from jsonb_array_elements(lines) as l
+      where (l->>'delta_weight_kg')::numeric < 0;
+
+      if v_total_merma > v_actor_merma_limit then
+        raise exception 'merma_limit_exceeded';
+      end if;
+    end if;
+    if v_mt = 'traspaso_sku' then
+      if not public.actor_can_traspaso_sku(v_from_sku_id, v_to_sku_id) then
+        raise exception 'traspaso_sku_not_allowed';
+      end if;
+    end if;
+    if jsonb_array_length(attachments) < 1 then
+      raise exception 'proof_required_for_employee';
+    end if;
+  end if;
+
+  if v_employee_id is not null and not exists (
+    select 1 from public.employees e
+    where e.id = v_employee_id
+      and public.actor_can_access_owner(e.owner_id)
+  ) then
+    raise exception 'employee_invalid';
+  end if;
+
+  -- Validate traspaso_sku rules.
+  if v_mt = 'traspaso_sku' then
+    if v_from_sku_id is null or v_to_sku_id is null or v_from_sku_id = v_to_sku_id then
+      raise exception 'traspaso_sku_requires_from_to';
+    end if;
+
+    if exists (
+      select 1
+      from public.skus s
+      where s.id = v_from_sku_id
+        and not public.actor_can_access_owner(s.owner_id)
+    ) then
+      raise exception 'from_sku_invalid';
+    end if;
+
+    if exists (
+      select 1
+      from public.skus s
+      where s.id = v_to_sku_id
+        and not public.actor_can_access_owner(s.owner_id)
+    ) then
+      raise exception 'to_sku_invalid';
+    end if;
+
+    select coalesce(sum((l->>'delta_weight_kg')::numeric), 0)
+      into v_sum_delta
+    from jsonb_array_elements(lines) as l;
+
+    if v_sum_delta <> 0 then
+      raise exception 'traspaso_sku_not_balanced';
+    end if;
+
+    if exists (
+      select 1
+      from jsonb_array_elements(lines) as l
+      where (
+        nullif(l->>'sku_id', '')::uuid is distinct from v_from_sku_id
+        and nullif(l->>'sku_id', '')::uuid is distinct from v_to_sku_id
+      )
+    ) then
+      raise exception 'traspaso_sku_lines_invalid';
+    end if;
+
+    if not exists (
+      select 1
+      from jsonb_array_elements(lines) as l
+      where nullif(l->>'sku_id', '')::uuid = v_from_sku_id
+    ) then
+      raise exception 'traspaso_sku_missing_from_lines';
+    end if;
+
+    if not exists (
+      select 1
+      from jsonb_array_elements(lines) as l
+      where nullif(l->>'sku_id', '')::uuid = v_to_sku_id
+    ) then
+      raise exception 'traspaso_sku_missing_to_lines';
+    end if;
+
+    if exists (
+      select 1
+      from jsonb_array_elements(lines) as l
+      where nullif(l->>'sku_id', '')::uuid = v_from_sku_id
+        and (l->>'delta_weight_kg')::numeric > 0
+    ) then
+      raise exception 'traspaso_sku_from_must_be_negative';
+    end if;
+
+    if exists (
+      select 1
+      from jsonb_array_elements(lines) as l
+      where nullif(l->>'sku_id', '')::uuid = v_to_sku_id
+        and (l->>'delta_weight_kg')::numeric < 0
+    ) then
+      raise exception 'traspaso_sku_to_must_be_positive';
+    end if;
+
+    select coalesce(sum((l->>'delta_weight_kg')::numeric), 0)
+      into v_sum_from
+    from jsonb_array_elements(lines) as l
+    where nullif(l->>'sku_id', '')::uuid = v_from_sku_id;
+
+    select coalesce(sum((l->>'delta_weight_kg')::numeric), 0)
+      into v_sum_to
+    from jsonb_array_elements(lines) as l
+    where nullif(l->>'sku_id', '')::uuid = v_to_sku_id;
+
+    if v_sum_from <> -v_sum_to then
+      raise exception 'traspaso_sku_not_balanced_by_sku';
+    end if;
+
+  else
+    if v_from_sku_id is not null or v_to_sku_id is not null then
+      raise exception 'from_to_sku_not_allowed';
+    end if;
+  end if;
+
+  insert into public.movements (
+    id,
+    movement_type,
+    occurred_at,
+    notes,
+    currency,
+    reported_by_employee_id,
+    from_sku_id,
+    to_sku_id,
+    from_quality_id,
+    to_quality_id,
+    reference_movement_id
+  ) values (
+    v_movement_id,
+    v_mt,
+    coalesce(nullif(movement->>'occurred_at', '')::timestamptz, now()),
+    nullif(movement->>'notes', ''),
+    coalesce(nullif(movement->>'currency', ''), 'MXN'),
+    v_employee_id,
+    v_from_sku_id,
+    v_to_sku_id,
+    nullif(movement->>'from_quality_id', '')::uuid,
+    nullif(movement->>'to_quality_id', '')::uuid,
+    nullif(movement->>'reference_movement_id', '')::uuid
+  );
+
+  insert into public.movement_lines (
+    movement_id,
+    sku_id,
+    product_id,
+    quality_id,
+    delta_weight_kg,
+    boxes,
+    price_model,
+    unit_price,
+    line_total
+  )
+  select
+    v_movement_id,
+    nullif(l->>'sku_id', '')::uuid,
+    (l->>'product_id')::uuid,
+    (l->>'quality_id')::uuid,
+    (l->>'delta_weight_kg')::numeric,
+    nullif(l->>'boxes', '')::integer,
+    nullif(l->>'price_model', '')::public.price_model,
+    nullif(l->>'unit_price', '')::numeric,
+    nullif(l->>'line_total', '')::numeric
+  from jsonb_array_elements(lines) as l;
+
+  if jsonb_array_length(attachments) > 0 then
+    insert into public.movement_attachments (
+      movement_id,
+      storage_bucket,
+      storage_path,
+      original_filename,
+      content_type,
+      size_bytes
+    )
+    select
+      v_movement_id,
+      coalesce(nullif(a->>'storage_bucket', ''), 'movement-proofs'),
+      (a->>'storage_path'),
+      nullif(a->>'original_filename', ''),
+      nullif(a->>'content_type', ''),
+      nullif(a->>'size_bytes', '')::bigint
+    from jsonb_array_elements(attachments) as a;
+  end if;
+
+  return v_movement_id;
+end;
+$$;
+
+revoke all on function public.create_movement_with_lines(jsonb, jsonb, jsonb) from public;
+grant execute on function public.create_movement_with_lines(jsonb, jsonb, jsonb) to authenticated;

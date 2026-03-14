@@ -544,3 +544,24 @@ textarea { min-height: 84px; resize: vertical; }
   margin-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
+
+.camera-modal {
+  max-width: 760px;
+}
+
+.camera-frame {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #0e1723;
+  min-height: 260px;
+}
+
+.camera-video {
+  display: block;
+  width: 100%;
+  max-height: min(68dvh, 720px);
+  object-fit: cover;
+  background: #0e1723;
+}

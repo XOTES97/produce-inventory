@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.07";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.07";
+import * as cfg from "./config.js?v=2026.03.14.08";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.08";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.07";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.08";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -73,6 +73,7 @@ const state = {
   qualities: [],
   employees: [],
   skus: [],
+  captureEmployeeProofs: [],
   masterLoaded: false,
   actor: {
     workspace_id: null,
@@ -226,8 +227,20 @@ function normalizeActorRoleError(message) {
       return "Este usuario solo puede capturar venta, merma o traspaso entre SKUs.";
     case "proof_required_for_employee":
       return "Los empleados deben adjuntar al menos una evidencia para registrar el movimiento.";
+    case "employee_not_linked":
+      return "Este usuario empleado no está ligado a un empleado activo.";
+    case "employee_must_match_linked_employee":
+      return "Este usuario solo puede guardar movimientos con su empleado ligado.";
     case "traspaso_sku_not_allowed":
       return "No tienes permiso para este traspaso entre SKUs.";
+    case "employee_sale_requires_sku":
+      return "Las ventas de empleado requieren un SKU por línea.";
+    case "employee_merma_requires_sku":
+      return "La merma de empleado requiere elegir un SKU por línea.";
+    case "employee_sale_only_per_box_skus":
+      return "Los empleados solo pueden capturar ventas por caja en SKUs autorizados.";
+    case "merma_limit_exceeded":
+      return "La merma excede el límite permitido para este usuario.";
     case "employee_invalid":
       return "Empleado inválido o inactivo.";
     case "only_manager_can_delete_movement":
@@ -331,6 +344,246 @@ function proofSafeName(name, useJpeg = true) {
   if (/\.(jpg|jpeg)$/i.test(base)) return base;
   const trimmed = base.replace(/\.[^/.]+$/, "");
   return `${trimmed || "proof"}.jpg`;
+}
+
+function revokeObjectUrl(url) {
+  if (!url) return;
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    // ignore
+  }
+}
+
+function clearEmployeeCaptureProofs() {
+  for (const item of state.captureEmployeeProofs || []) {
+    revokeObjectUrl(item?.preview_url);
+  }
+  state.captureEmployeeProofs = [];
+}
+
+function employeeCaptureStampTime(date = new Date()) {
+  try {
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return date.toISOString();
+  }
+}
+
+function employeeCaptureStampLines(employeeName, capturedAt = new Date()) {
+  const lines = [];
+  const safeName = String(employeeName || "").trim();
+  lines.push(`Empleado: ${safeName || "Sin nombre"}`);
+  lines.push(`Capturada: ${employeeCaptureStampTime(capturedAt)}`);
+  return lines;
+}
+
+function fitMediaWithin(width, height, maxDimension = MAX_PROOF_DIMENSION) {
+  const w = Number(width || 0);
+  const h = Number(height || 0);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return { width: 0, height: 0 };
+  }
+  const scale = Math.min(1, maxDimension / w, maxDimension / h);
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+  };
+}
+
+function drawEmployeeProofStamp(ctx, canvas, lines) {
+  const textLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+  if (!ctx || !canvas || textLines.length === 0) return;
+
+  const pad = Math.max(18, Math.round(canvas.width * 0.02));
+  const lineGap = Math.max(8, Math.round(canvas.width * 0.008));
+  const fontSize = Math.max(20, Math.round(canvas.width * 0.028));
+  const lineHeight = Math.round(fontSize * 1.2);
+
+  ctx.save();
+  ctx.font = `700 ${fontSize}px Poppins, sans-serif`;
+  const maxTextWidth = textLines.reduce((acc, line) => Math.max(acc, ctx.measureText(String(line)).width), 0);
+  const boxHeight = pad * 2 + lineHeight * textLines.length + lineGap * Math.max(0, textLines.length - 1);
+  const boxWidth = Math.min(canvas.width - pad * 2, Math.ceil(maxTextWidth + pad * 2));
+  const boxX = pad;
+  const boxY = Math.max(pad, canvas.height - boxHeight - pad);
+
+  ctx.fillStyle = "rgba(12, 21, 35, 0.72)";
+  ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+  ctx.fillStyle = "#ffffff";
+  let y = boxY + pad + fontSize;
+  for (const line of textLines) {
+    ctx.fillText(String(line), boxX + pad, y);
+    y += lineHeight + lineGap;
+  }
+  ctx.restore();
+}
+
+async function buildEmployeeCameraFile(videoEl, employeeName) {
+  const sourceWidth = Number(videoEl?.videoWidth || 0);
+  const sourceHeight = Number(videoEl?.videoHeight || 0);
+  if (!sourceWidth || !sourceHeight) {
+    throw new Error("La cámara todavía no está lista.");
+  }
+
+  const capturedAt = new Date();
+  const target = fitMediaWithin(sourceWidth, sourceHeight, MAX_PROOF_DIMENSION);
+  const canvas = document.createElement("canvas");
+  canvas.width = target.width;
+  canvas.height = target.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("No se pudo preparar la foto.");
+
+  ctx.drawImage(videoEl, 0, 0, target.width, target.height);
+  drawEmployeeProofStamp(ctx, canvas, employeeCaptureStampLines(employeeName, capturedAt));
+
+  const blob = await canvasToBlob(canvas, { type: "image/jpeg", quality: 0.88 });
+  if (!blob) throw new Error("No se pudo capturar la foto.");
+
+  const safeStamp = capturedAt.toISOString().replace(/[:.]/g, "-");
+  const file = new File([blob], `employee-proof-${safeStamp}.jpg`, {
+    type: "image/jpeg",
+    lastModified: capturedAt.getTime(),
+  });
+
+  return {
+    file,
+    captured_at_iso: capturedAt.toISOString(),
+    stamp_text: employeeCaptureStampLines(employeeName, capturedAt).join(" | "),
+  };
+}
+
+async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evidencia" } = {}) {
+  setProofPickerOpen(true, { scheduleRender: false });
+
+  return await new Promise((resolve, reject) => {
+    const backdrop = h("div", { class: "modal-backdrop" });
+    const modal = h("div", { class: "modal col camera-modal" });
+    const msg = h("div");
+    const video = h("video", {
+      class: "camera-video",
+      autoplay: "autoplay",
+      muted: "muted",
+      playsinline: "playsinline",
+    });
+    video.muted = true;
+    video.playsInline = true;
+
+    let stream = null;
+    let closed = false;
+
+    const stopStream = () => {
+      if (!stream) return;
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      }
+      stream = null;
+    };
+
+    const close = (result = null, error = null) => {
+      if (closed) return;
+      closed = true;
+      stopStream();
+      backdrop.remove();
+      clearProofPickerOpen({ scheduleRender: false });
+      if (error) reject(error);
+      else resolve(result);
+    };
+
+    const cancelBtn = h("button", { class: "btn btn-ghost", type: "button", onclick: () => close(null) }, ["Cancelar"]);
+    const captureBtn = h(
+      "button",
+      {
+        class: "btn btn-primary",
+        type: "button",
+        disabled: "true",
+        onclick: async () => {
+          captureBtn.disabled = true;
+          try {
+            msg.replaceChildren(notice("warn", "Procesando foto..."));
+            const captured = await buildEmployeeCameraFile(video, employeeName);
+            close({
+              ...captured,
+              preview_url: URL.createObjectURL(captured.file),
+            });
+          } catch (error) {
+            captureBtn.disabled = false;
+            msg.replaceChildren(notice("error", error?.message ? String(error.message) : "No se pudo capturar la foto."));
+          }
+        },
+      },
+      ["Capturar foto"]
+    );
+
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) close(null);
+    });
+
+    const header = h("div", { class: "row-wrap modal-header" }, [
+      h("div", { class: "col", style: "gap: 4px" }, [
+        h("div", { style: "font-weight: 820; font-size: 16px", text: title }),
+        h("div", { class: "muted", text: "La foto se guarda con nombre del empleado y hora de captura." }),
+      ]),
+      h("div", { class: "spacer" }),
+      cancelBtn,
+    ]);
+
+    modal.append(
+      header,
+      msg,
+      h("div", { class: "camera-frame" }, [video]),
+      h("div", { class: "row-wrap" }, [h("div", { class: "spacer" }), captureBtn])
+    );
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    (async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Este dispositivo no permite usar la cámara desde la app.");
+        }
+        msg.replaceChildren(notice("warn", "Solicitando acceso a la cámara..."));
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1600 },
+            height: { ideal: 1600 },
+          },
+        });
+        video.srcObject = stream;
+        await video.play();
+        msg.replaceChildren(notice("ok", "Toma la foto y presiona Capturar foto."));
+        captureBtn.disabled = false;
+      } catch (error) {
+        stopStream();
+        msg.replaceChildren(
+          notice(
+            "error",
+            error?.message
+              ? String(error.message)
+              : "No se pudo abrir la cámara. Revisa permisos del navegador e intenta de nuevo."
+          )
+        );
+      }
+    })();
+  });
 }
 
 async function normalizeProofFile(file, { maxDimension = MAX_PROOF_DIMENSION, quality = PROOF_COMPRESS_QUALITY } = {}) {
@@ -921,46 +1174,78 @@ function movementTypePills({ onChange, allowed = movementTypesForActor(), initia
   return { el: h("div", { class: "pillbar" }, pills), get: () => current };
 }
 
-function buildLineRow({ products, qualities, skus, mode, onRemove }) {
+function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCapture = false, getAllowedSkusForMode = null }) {
   let currentMode = mode;
-  const skuSel = h(
-    "select",
-    {},
-    [
-      h("option", { value: "", text: "SKU (opcional)..." }),
-      ...(skus || []).map((s) =>
-        h("option", { value: s.id, text: `${Number(s.code)} ${String(s.name)}` })
-      ),
-    ]
-  );
+  const allSkus = Array.isArray(skus) ? [...skus] : [];
+  const skuSel = h("select", {});
 
   const productSel = h("select", {}, optionList(products, { includeEmpty: true, emptyLabel: "Producto..." }));
   const qualitySel = h("select", {}, optionList(qualities, { includeEmpty: true, emptyLabel: "Calidad..." }));
   const weight = h("input", { type: "number", step: "0.001", min: "0", placeholder: "kg" });
 
   const boxes = h("input", { type: "number", step: "1", min: "0", placeholder: "cajas" });
-  const priceModel = h(
-    "select",
-    {},
-    [
-      h("option", { value: "", text: "Modelo de precio..." }),
-      h("option", { value: "per_kg", text: "Por kg" }),
-      h("option", { value: "per_box", text: "Por caja" }),
-    ]
-  );
+  const priceModel = h("select", {}, [
+    h("option", { value: "", text: "Modelo de precio..." }),
+    h("option", { value: "per_kg", text: "Por kg" }),
+    h("option", { value: "per_box", text: "Por caja" }),
+  ]);
   const unitPrice = h("input", { type: "number", step: "0.01", min: "0", placeholder: "precio unitario" });
   const total = h("div", { class: "muted right mono", text: "" });
 
-  skuSel.addEventListener("change", () => {
-    const id = String(skuSel.value || "");
-    const s = (skus || []).find((x) => x.id === id);
-    if (!s) return;
-    productSel.value = String(s.product_id || "");
-    qualitySel.value = String(s.quality_id || "");
-    if (currentMode === "venta" && s.default_price_model) {
-      priceModel.value = String(s.default_price_model);
-      recalc();
+  const skuField = h("div", {}, [field(employeeCapture ? "SKU" : "SKU (opcional)", skuSel)]);
+  const productField = h("div", { style: "flex: 1; min-width: 200px" }, [field("Producto", productSel)]);
+  const qualityField = h("div", { style: "flex: 1; min-width: 180px" }, [field("Calidad", qualitySel)]);
+  const weightField = h("div", { style: "flex: 1; min-width: 140px" }, [field("Peso (kg)", weight)]);
+  const priceModelField = field("Modelo", priceModel);
+  const boxesField = field("Cajas (opcional)", boxes);
+  const unitPriceField = field("Precio unitario", unitPrice);
+  const saleGrid = h("div", { class: "grid3" }, [priceModelField, boxesField, unitPriceField]);
+  const totalRow = h("div", { class: "row" }, [h("div", { class: "spacer" }), total]);
+
+  function allowedSkusForMode(nextMode = currentMode) {
+    if (typeof getAllowedSkusForMode === "function") {
+      const provided = getAllowedSkusForMode(nextMode, allSkus);
+      if (Array.isArray(provided)) return provided;
     }
+    return allSkus;
+  }
+
+  function refreshSkuOptions(nextMode = currentMode, preserveValue = true) {
+    const currentValue = preserveValue ? String(skuSel.value || "") : "";
+    const allowed = allowedSkusForMode(nextMode);
+    skuSel.replaceChildren(
+      h("option", { value: "", text: employeeCapture ? "SKU..." : "SKU (opcional)..." }),
+      ...allowed.map((s) => h("option", { value: s.id, text: `${Number(s.code)} ${String(s.name)}` }))
+    );
+    if (currentValue && allowed.some((s) => String(s.id) === currentValue)) {
+      skuSel.value = currentValue;
+    }
+  }
+
+  function findSku(id) {
+    const value = String(id || "").trim();
+    return allSkus.find((x) => String(x.id) === value) || null;
+  }
+
+  function syncSkuDerivedFields() {
+    const s = findSku(skuSel.value);
+    if (s) {
+      productSel.value = String(s.product_id || "");
+      qualitySel.value = String(s.quality_id || "");
+      if (currentMode === "venta" && s.default_price_model && !priceModel.disabled && !priceModel.value) {
+        priceModel.value = String(s.default_price_model);
+      }
+      return;
+    }
+    if (employeeCapture && currentMode !== "traspaso_calidad" && currentMode !== "traspaso_sku") {
+      productSel.value = "";
+      qualitySel.value = "";
+    }
+  }
+
+  skuSel.addEventListener("change", () => {
+    syncSkuDerivedFields();
+    recalc();
   });
 
   function recalc() {
@@ -1004,22 +1289,14 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
   );
 
   const row = h("div", { class: "card col" }, [
-    h("div", {}, [field("SKU (opcional)", skuSel)]),
+    skuField,
     h("div", { class: "row-wrap" }, [
-      h("div", { style: "flex: 1; min-width: 200px" }, [field("Producto", productSel)]),
-      mode === "traspaso_calidad"
-        ? h("div", { style: "display:none" })
-        : h("div", { style: "flex: 1; min-width: 180px" }, [field("Calidad", qualitySel)]),
-      h("div", { style: "flex: 1; min-width: 140px" }, [field("Peso (kg)", weight)]),
+      productField,
+      qualityField,
+      weightField,
     ]),
-    mode === "venta"
-      ? h("div", { class: "grid3" }, [
-          field("Modelo", priceModel),
-          field("Cajas (opcional)", boxes),
-          field("Precio unitario", unitPrice),
-        ])
-      : h("div", { style: "display:none" }),
-    mode === "venta" ? h("div", { class: "row" }, [h("div", { class: "spacer" }), total]) : null,
+    saleGrid,
+    totalRow,
     h("div", { class: "row-wrap" }, [h("div", { class: "spacer" }), removeBtn]),
   ]);
 
@@ -1037,6 +1314,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
 
   function setValues(values = {}) {
     if (values == null || typeof values !== "object") return;
+    refreshSkuOptions(currentMode, false);
     skuSel.value = String(values.sku_id || "");
     productSel.value = String(values.product_id || "");
     qualitySel.value = String(values.quality_id || "");
@@ -1044,51 +1322,73 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
     boxes.value = String(values.boxes != null ? values.boxes : "");
     priceModel.value = String(values.price_model || "");
     unitPrice.value = String(values.unit_price != null ? values.unit_price : "");
+    syncSkuDerivedFields();
     recalc();
   }
 
   function setVisibilityForMode(nextMode) {
     currentMode = nextMode;
+    refreshSkuOptions(nextMode);
     row.querySelectorAll(".grid3").forEach((el) => (el.style.display = nextMode === "venta" ? "" : "none"));
-    row.querySelectorAll(".right").forEach((el) => (el.style.display = nextMode === "venta" ? "" : "none"));
+    totalRow.style.display = nextMode === "venta" ? "" : "none";
+    const employeeSkuDrivenMode = employeeCapture && nextMode !== "traspaso_calidad" && nextMode !== "traspaso_sku";
 
-	    // Hide quality selector for traspasos (direction comes from movement-level fields).
-	    if (nextMode === "traspaso_calidad") {
-	      skuSel.value = "";
-	      skuSel.closest("div").style.display = "none";
-	      productSel.closest("div").style.display = "";
-	      qualitySel.value = "";
-	      qualitySel.closest("div").style.display = "none";
-	      productSel.disabled = false;
-	      qualitySel.disabled = false;
-	    } else if (nextMode === "traspaso_sku") {
-	      // Direction comes from movement-level from/to SKU.
-	      skuSel.value = "";
-	      skuSel.closest("div").style.display = "none";
-	      productSel.closest("div").style.display = "none";
-	      qualitySel.closest("div").style.display = "none";
-	      productSel.disabled = true;
-	      qualitySel.disabled = true;
-	    } else {
-	      skuSel.closest("div").style.display = "";
-	      productSel.closest("div").style.display = "";
-	      qualitySel.closest("div").style.display = "";
-	      productSel.disabled = false;
-	      qualitySel.disabled = false;
-	    }
+    // Hide quality selector for traspasos (direction comes from movement-level fields).
+    if (nextMode === "traspaso_calidad") {
+      skuSel.value = "";
+      skuField.style.display = "none";
+      productField.style.display = "";
+      qualitySel.value = "";
+      qualityField.style.display = "none";
+      productSel.disabled = false;
+      qualitySel.disabled = false;
+    } else if (nextMode === "traspaso_sku") {
+      // Direction comes from movement-level from/to SKU.
+      skuSel.value = "";
+      skuField.style.display = "none";
+      productField.style.display = "none";
+      qualityField.style.display = "none";
+      productSel.disabled = true;
+      qualitySel.disabled = true;
+    } else if (employeeSkuDrivenMode) {
+      skuField.style.display = "";
+      productField.style.display = "none";
+      qualityField.style.display = "none";
+      productSel.disabled = true;
+      qualitySel.disabled = true;
+    } else {
+      skuField.style.display = "";
+      productField.style.display = "";
+      qualityField.style.display = "";
+      productSel.disabled = false;
+      qualitySel.disabled = false;
+    }
     if (nextMode !== "venta") {
       priceModel.value = "";
       boxes.value = "";
       unitPrice.value = "";
       total.textContent = "";
+      priceModel.disabled = false;
+      priceModelField.style.display = "";
     } else {
-      const id = String(skuSel.value || "");
-      const s = (skus || []).find((x) => x.id === id);
+      const s = findSku(skuSel.value);
+      const employeePerBoxOnly = employeeCapture;
+      if (employeePerBoxOnly) {
+        priceModel.value = "per_box";
+        priceModel.disabled = true;
+        priceModelField.style.display = "none";
+        boxesField.querySelector("label")?.replaceChildren(document.createTextNode("Cajas"));
+      } else {
+        priceModel.disabled = false;
+        priceModelField.style.display = "";
+        boxesField.querySelector("label")?.replaceChildren(document.createTextNode("Cajas (opcional)"));
+      }
       if (s && s.default_price_model && !priceModel.value) {
         priceModel.value = String(s.default_price_model);
       }
       recalc();
     }
+    syncSkuDerivedFields();
     if (nextMode !== "traspaso_calidad" && !qualitySel.value && qualities.length === 1) {
       qualitySel.value = qualities[0].id;
     }
@@ -1102,6 +1402,9 @@ function buildLineRow({ products, qualities, skus, mode, onRemove }) {
       qualitySel.disabled = !!lock;
     }
   }
+
+  refreshSkuOptions(currentMode, false);
+  setVisibilityForMode(currentMode);
 
   return { el: row, get, setMode: setVisibilityForMode, setProductQuality, setValues };
 }
@@ -1142,6 +1445,7 @@ function buildMovementLinePreviewItems(lines, movementType, currency, maxLines =
 }
 
 async function pageCapture(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const products = state.products.filter((p) => p.is_active);
   const qualities = state.qualities.filter((q) => q.is_active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const skus = state.skus.filter((s) => s.is_active).sort((a, b) => (a.code || 0) - (b.code || 0));
@@ -1165,6 +1469,52 @@ async function pageCapture(pageCtx) {
     return;
   }
 
+  const isActorManager = isManager();
+  const actorRequiresEmployee = hasProofRequirement();
+  const autoEmpId = actorEmployeeId();
+  const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
+  const employeeSaleSkus = skus.filter((s) => String(s.default_price_model || "") === "per_box");
+  const employeeSaleSkuIds = new Set(employeeSaleSkus.map((s) => String(s.id)));
+  let employeeTraspasoRules = [];
+  const employeeToSkuByFrom = new Map();
+
+  if (!isActorManager && state.actor?.allow_all_traspaso_sku === false && state.actor?.workspace_id) {
+    const { data, error } = await supabase
+      .from("workspace_traspaso_sku_rules")
+      .select("from_sku_id,to_sku_id,is_allowed")
+      .eq("workspace_id", state.actor.workspace_id)
+      .eq("is_allowed", true);
+    if (!isActive()) return;
+    if (error) {
+      msg.appendChild(notice("warn", "No se pudieron cargar las reglas de traspaso SKU. Solo se aplicará la validación del servidor."));
+    } else {
+      employeeTraspasoRules = data || [];
+      for (const rule of employeeTraspasoRules) {
+        const fromId = String(rule.from_sku_id || "");
+        const toId = String(rule.to_sku_id || "");
+        if (!fromId || !toId) continue;
+        if (!employeeToSkuByFrom.has(fromId)) employeeToSkuByFrom.set(fromId, new Set());
+        employeeToSkuByFrom.get(fromId).add(toId);
+      }
+    }
+  }
+
+  function allowedLineSkusForMode(nextMode, allSkus) {
+    if (isActorManager) return allSkus;
+    if (nextMode === "venta") {
+      return allSkus.filter((s) => employeeSaleSkuIds.has(String(s.id)));
+    }
+    return allSkus;
+  }
+
+  const employeeCanUseTraspasoSku =
+    isActorManager || state.actor?.allow_all_traspaso_sku !== false || employeeToSkuByFrom.size > 0;
+  const availableMovementTypes = movementTypesForActor().filter((mt) => {
+    if (!isActorManager && mt === "venta" && employeeSaleSkuIds.size === 0) return false;
+    if (!isActorManager && mt === "traspaso_sku" && !employeeCanUseTraspasoSku) return false;
+    return true;
+  });
+
   const fixedDtLockOn = storageGet(STORAGE_KEYS.captureFixedDatetimeLock, "0") === "1";
   const fixedDtSaved = storageGet(STORAGE_KEYS.captureFixedDatetimeValue, "");
   const occurredAt = h("input", {
@@ -1172,9 +1522,9 @@ async function pageCapture(pageCtx) {
     value: fixedDtLockOn && fixedDtSaved ? fixedDtSaved : localNowInputValue(),
   });
   const lockOccurredAt = h("input", { type: "checkbox" });
-  lockOccurredAt.checked = fixedDtLockOn;
+  lockOccurredAt.checked = isActorManager && fixedDtLockOn;
   const aggregateMode = h("input", { type: "checkbox" });
-  aggregateMode.checked = storageGet(STORAGE_KEYS.captureBatchMode, "0") === "1";
+  aggregateMode.checked = isActorManager && storageGet(STORAGE_KEYS.captureBatchMode, "0") === "1";
   const aggregateCloseTime = h("input", {
     type: "time",
     value: storageGet(STORAGE_KEYS.captureBatchCloseTime, batchCloseDefaultTime(occurredAt.value)),
@@ -1247,9 +1597,6 @@ function setBatchClosePresetState(value) {
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
   const currency = h("input", { type: "text", value: DEFAULT_CURRENCY, placeholder: "Moneda (MXN)" });
   const reportedBy = h("select", {}, optionList(employees, { includeEmpty: true, emptyLabel: "(Opcional)..." }));
-  const autoEmpId = actorEmployeeId();
-  const actorRequiresEmployee = hasProofRequirement();
-  const isActorManager = isManager();
   if (autoEmpId) {
     reportedBy.value = autoEmpId;
     if (!isActorManager) {
@@ -1258,27 +1605,13 @@ function setBatchClosePresetState(value) {
   }
   const reportedByField = isActorManager
     ? field("Empleado", reportedBy)
-    : [field("Empleado", h("div", { class: "muted", text: getActorDisplayName() || "Empleado asociado" }))];
+    : [field("Empleado", h("div", { class: "muted", text: actorDisplayName }))];
 
   const fromQuality = h("select", {}, optionList(qualities, { includeEmpty: true, emptyLabel: "De calidad..." }));
   const toQuality = h("select", {}, optionList(qualities, { includeEmpty: true, emptyLabel: "A calidad..." }));
 
-  const fromSku = h(
-    "select",
-    {},
-    [
-      h("option", { value: "", text: "De SKU..." }),
-      ...skus.map((s) => h("option", { value: s.id, text: `${Number(s.code)} ${String(s.name)}` })),
-    ]
-  );
-  const toSku = h(
-    "select",
-    {},
-    [
-      h("option", { value: "", text: "A SKU..." }),
-      ...skus.map((s) => h("option", { value: s.id, text: `${Number(s.code)} ${String(s.name)}` })),
-    ]
-  );
+  const fromSku = h("select", {});
+  const toSku = h("select", {});
 
   const adjustDir = h(
     "select",
@@ -1289,40 +1622,112 @@ function setBatchClosePresetState(value) {
     ]
   );
 
-  const proofs = h("input", { type: "file", accept: "image/*", multiple: "multiple" });
-  proofs.addEventListener("pointerdown", () => {
-    setProofPickerOpen(true);
-  });
-  proofs.addEventListener("touchstart", () => {
-    setProofPickerOpen(true);
-  });
-  proofs.addEventListener("click", () => {
-    setProofPickerOpen(true);
-  });
-  proofs.addEventListener("focus", () => {
-    setProofPickerOpen(true);
-  });
-  proofs.addEventListener("blur", () => {
-    setProofPickerOpen(false);
-  });
-  proofs.addEventListener("change", () => {
-    setProofPickerOpen(false);
-    queueDraftSave();
-  });
-  proofs.addEventListener("cancel", () => {
-    setProofPickerOpen(false);
-  });
+  let proofs = null;
+  const employeeProofMsg = h("div");
+  const employeeProofsWrap = h("div", { class: "col" });
+  const employeeProofActions = h("div", { class: "row-wrap" });
 
-  if (!isActorManager) {
-    proofs.setAttribute("capture", "environment");
+  function renderEmployeeProofs() {
+    employeeProofsWrap.replaceChildren();
+    const items = state.captureEmployeeProofs || [];
+    if (items.length === 0) {
+      employeeProofsWrap.appendChild(notice("warn", "Todavía no hay foto de evidencia."));
+      return;
+    }
+    employeeProofsWrap.appendChild(
+      h(
+        "div",
+        { class: "thumbgrid" },
+        items.map((item, index) =>
+          h("div", { class: "card col", style: "padding: 10px; gap: 8px" }, [
+            h("img", {
+              class: "thumb",
+              src: item.preview_url,
+              alt: item.file?.name || "evidencia",
+            }),
+            h("div", { class: "muted", text: item.stamp_text || employeeCaptureStampTime(new Date(item.captured_at_iso || Date.now())) }),
+            h(
+              "button",
+              {
+                class: "btn btn-ghost",
+                type: "button",
+                onclick: () => {
+                  const removed = state.captureEmployeeProofs.splice(index, 1)[0];
+                  revokeObjectUrl(removed?.preview_url);
+                  renderEmployeeProofs();
+                },
+              },
+              ["Quitar"]
+            ),
+          ])
+        )
+      )
+    );
   }
+
+  async function captureEmployeeProof() {
+    employeeProofMsg.replaceChildren();
+    try {
+      const captured = await openEmployeeCameraCaptureModal({ employeeName: actorDisplayName });
+      if (!captured) return;
+      state.captureEmployeeProofs.push(captured);
+      renderEmployeeProofs();
+    } catch (error) {
+      employeeProofMsg.replaceChildren(
+        notice("error", error?.message ? String(error.message) : "No se pudo tomar la foto.")
+      );
+    }
+  }
+
+  if (isActorManager) {
+    proofs = h("input", { type: "file", accept: "image/*", multiple: "multiple" });
+    proofs.addEventListener("pointerdown", () => {
+      setProofPickerOpen(true);
+    });
+    proofs.addEventListener("touchstart", () => {
+      setProofPickerOpen(true);
+    });
+    proofs.addEventListener("click", () => {
+      setProofPickerOpen(true);
+    });
+    proofs.addEventListener("focus", () => {
+      setProofPickerOpen(true);
+    });
+    proofs.addEventListener("blur", () => {
+      setProofPickerOpen(false);
+    });
+    proofs.addEventListener("change", () => {
+      setProofPickerOpen(false);
+      queueDraftSave();
+    });
+    proofs.addEventListener("cancel", () => {
+      setProofPickerOpen(false);
+    });
+  } else {
+    employeeProofActions.append(
+      h("button", { class: "btn btn-primary", type: "button", onclick: captureEmployeeProof }, ["Tomar foto"]),
+      h(
+        "button",
+        {
+          class: "btn btn-ghost",
+          type: "button",
+          onclick: () => {
+            clearEmployeeCaptureProofs();
+            renderEmployeeProofs();
+          },
+        },
+        ["Limpiar fotos"]
+      )
+    );
+    renderEmployeeProofs();
+  }
+
   const proofsHint = h("div", { class: "muted" }, [
     actorRequiresEmployee
-      ? "Evidencia obligatoria (empleado): toma la foto del movimiento antes de guardar."
+      ? "Evidencia obligatoria (empleado): solo se permite tomar la foto desde la cámara de la app."
       : "Evidencia (opcional): foto(s) de WhatsApp o captura de pantalla.",
   ]);
 
-  const availableMovementTypes = movementTypesForActor();
   const pills = movementTypePills({
     allowed: availableMovementTypes,
     initial: availableMovementTypes[0] || "venta",
@@ -1372,15 +1777,15 @@ function setBatchClosePresetState(value) {
     if (!wrapped?.payload || typeof wrapped.payload !== "object") return;
     const draft = wrapped.payload;
     if (!draft) return;
-    const allowed = movementTypesForActor();
+    const allowed = availableMovementTypes;
     if (draft.movementType && allowed.includes(String(draft.movementType))) {
       currentMode = String(draft.movementType);
     }
     draftRestoreInProgress = true;
     try {
       if (draft.occurredAt) occurredAt.value = String(draft.occurredAt);
-      lockOccurredAt.checked = !!draft.lockOccurredAt;
-      aggregateMode.checked = !!draft.aggregateMode;
+      lockOccurredAt.checked = isActorManager && !!draft.lockOccurredAt;
+      aggregateMode.checked = isActorManager && !!draft.aggregateMode;
       aggregateCloseTime.value = normalizeDraftValue(draft.aggregateCloseTime, aggregateCloseTime.value);
       notes.value = String(draft.notes || "");
       currency.value = String(draft.currency || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY;
@@ -1406,12 +1811,12 @@ function setBatchClosePresetState(value) {
 
       updateMode(currentMode);
       setBatchClosePresetState(aggregateCloseTime.value);
-      aggregateCloseTime.disabled = !aggregateMode.checked;
-      batchCloseWrap.style.display = aggregateMode.checked ? "" : "none";
-      batchHint.style.display = aggregateMode.checked ? "" : "none";
-      aggregateNoCutoff.disabled = !aggregateMode.checked;
-      aggregateNoCutoffRow.style.display = aggregateMode.checked ? "" : "none";
-      if (aggregateMode.checked) {
+      aggregateCloseTime.disabled = !isActorManager || !aggregateMode.checked;
+      batchCloseWrap.style.display = isActorManager && aggregateMode.checked ? "" : "none";
+      batchHint.style.display = isActorManager && aggregateMode.checked ? "" : "none";
+      aggregateNoCutoff.disabled = !isActorManager || !aggregateMode.checked;
+      aggregateNoCutoffRow.style.display = isActorManager && aggregateMode.checked ? "" : "none";
+      if (isActorManager && aggregateMode.checked) {
         const suggested = batchCloseDefaultTime(occurredAt.value);
         batchClosePresetTodayDefault.dataset.preset = suggested;
         setAggregateCloseTime(aggregateCloseTime.value || suggested, true);
@@ -1422,29 +1827,62 @@ function setBatchClosePresetState(value) {
     }
   }
 
-	  function applyTraspasoSkuBucket() {
-	    if (currentMode !== "traspaso_sku") return;
-	    const id = String(fromSku.value || "");
-	    const s = id ? skuById(id) : null;
-	    if (!s) return;
-	    for (const row of lineRows) row.setProductQuality(s.product_id, s.quality_id, { lock: true });
-	  }
+  function setSkuSelectOptions(selectEl, items, emptyLabel, preserve = true) {
+    const currentValue = preserve ? String(selectEl.value || "") : "";
+    selectEl.replaceChildren(
+      h("option", { value: "", text: emptyLabel }),
+      ...items.map((s) => h("option", { value: s.id, text: `${Number(s.code)} ${String(s.name)}` }))
+    );
+    if (currentValue && items.some((s) => String(s.id) === currentValue)) {
+      selectEl.value = currentValue;
+    }
+  }
 
-	  const traspasoSkuMeta = h("div", { class: "muted" });
-	  function updateTraspasoSkuMeta() {
-	    if (currentMode !== "traspaso_sku") return;
-	    const fromId = String(fromSku.value || "");
-	    const toId = String(toSku.value || "");
-	    const f = fromId ? skuById(fromId) : null;
-	    const t = toId ? skuById(toId) : null;
-	    if (!f && !t) {
-	      traspasoSkuMeta.textContent = "";
-	      return;
-	    }
-	    const left = f ? `${skuLabel(f.id)} (${productName(f.product_id)} | ${qualityName(f.quality_id)})` : "(elige De SKU)";
-	    const right = t ? `${skuLabel(t.id)} (${productName(t.product_id)} | ${qualityName(t.quality_id)})` : "(elige A SKU)";
-	    traspasoSkuMeta.textContent = `Movimiento: ${left} -> ${right}`;
-	  }
+  function allowedFromTraspasoSkus() {
+    if (isActorManager || state.actor?.allow_all_traspaso_sku !== false) return skus;
+    return skus.filter((s) => employeeToSkuByFrom.has(String(s.id)));
+  }
+
+  function allowedToTraspasoSkus(fromId) {
+    if (isActorManager || state.actor?.allow_all_traspaso_sku !== false) {
+      return skus.filter((s) => String(s.id) !== String(fromId || ""));
+    }
+    const allowed = employeeToSkuByFrom.get(String(fromId || ""));
+    if (!allowed) return [];
+    return skus.filter((s) => allowed.has(String(s.id)));
+  }
+
+  function refreshTraspasoSkuOptions() {
+    const fromItems = allowedFromTraspasoSkus();
+    setSkuSelectOptions(fromSku, fromItems, "De SKU...");
+    const fromId = String(fromSku.value || "");
+    const toItems = fromId ? allowedToTraspasoSkus(fromId) : [];
+    setSkuSelectOptions(toSku, toItems, "A SKU...");
+  }
+
+  function applyTraspasoSkuBucket() {
+    if (currentMode !== "traspaso_sku") return;
+    const id = String(fromSku.value || "");
+    const s = id ? skuById(id) : null;
+    if (!s) return;
+    for (const row of lineRows) row.setProductQuality(s.product_id, s.quality_id, { lock: true });
+  }
+
+  const traspasoSkuMeta = h("div", { class: "muted" });
+  function updateTraspasoSkuMeta() {
+    if (currentMode !== "traspaso_sku") return;
+    const fromId = String(fromSku.value || "");
+    const toId = String(toSku.value || "");
+    const f = fromId ? skuById(fromId) : null;
+    const t = toId ? skuById(toId) : null;
+    if (!f && !t) {
+      traspasoSkuMeta.textContent = "";
+      return;
+    }
+    const left = f ? `${skuLabel(f.id)} (${productName(f.product_id)} | ${qualityName(f.quality_id)})` : "(elige De SKU)";
+    const right = t ? `${skuLabel(t.id)} (${productName(t.product_id)} | ${qualityName(t.quality_id)})` : "(elige A SKU)";
+    traspasoSkuMeta.textContent = `Movimiento: ${left} -> ${right}`;
+  }
 
   function addLine() {
     const row = buildLineRow({
@@ -1452,6 +1890,8 @@ function setBatchClosePresetState(value) {
       qualities,
       skus,
       mode: currentMode,
+      employeeCapture: !isActorManager,
+      getAllowedSkusForMode: allowedLineSkusForMode,
       onRemove: () => {
         const idx = lineRows.indexOf(row);
         if (idx >= 0) {
@@ -1472,13 +1912,14 @@ function setBatchClosePresetState(value) {
     for (const row of lineRows) row.setMode(mt);
 
     traspasoSection.style.display = mt === "traspaso_calidad" ? "" : "none";
-		    traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
-		    ajusteSection.style.display = mt === "ajuste" ? "" : "none";
-		    currencySection.style.display = mt === "venta" ? "" : "none";
-		    applyTraspasoSkuBucket();
-		    updateTraspasoSkuMeta();
-        queueDraftSave();
-		  }
+    traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
+    ajusteSection.style.display = mt === "ajuste" ? "" : "none";
+    currencySection.style.display = mt === "venta" ? "" : "none";
+    refreshTraspasoSkuOptions();
+    applyTraspasoSkuBucket();
+    updateTraspasoSkuMeta();
+    queueDraftSave();
+  }
 
   addLine();
 
@@ -1502,24 +1943,34 @@ function setBatchClosePresetState(value) {
   traspasoSkuSection.style.display = "none";
   ajusteSection.style.display = "none";
 
-  fromSku.addEventListener("change", () => applyTraspasoSkuBucket());
-  fromSku.addEventListener("change", () => updateTraspasoSkuMeta());
-  toSku.addEventListener("change", () => updateTraspasoSkuMeta());
+  refreshTraspasoSkuOptions();
+  fromSku.addEventListener("change", () => {
+    refreshTraspasoSkuOptions();
+    applyTraspasoSkuBucket();
+    updateTraspasoSkuMeta();
+    queueDraftSave();
+  });
+  toSku.addEventListener("change", () => {
+    updateTraspasoSkuMeta();
+    queueDraftSave();
+  });
   let aggregateCloseTimeEdited = false;
   occurredAt.addEventListener("change", () => {
-    if (lockOccurredAt.checked) storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
-    if (aggregateMode.checked && !aggregateCloseTimeEdited) {
+    if (isActorManager && lockOccurredAt.checked) storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    if (isActorManager && aggregateMode.checked && !aggregateCloseTimeEdited) {
       const suggested = batchCloseDefaultTime(occurredAt.value);
       batchClosePresetTodayDefault.dataset.preset = suggested;
       setAggregateCloseTime(suggested, false);
     }
   });
   aggregateCloseTime.addEventListener("change", () => {
+    if (!isActorManager) return;
     aggregateCloseTimeEdited = true;
     storageSet(STORAGE_KEYS.captureBatchCloseTime, String(aggregateCloseTime.value || ""));
     setBatchClosePresetState(aggregateCloseTime.value);
   });
   lockOccurredAt.addEventListener("change", () => {
+    if (!isActorManager) return;
     storageSet(STORAGE_KEYS.captureFixedDatetimeLock, lockOccurredAt.checked ? "1" : "0");
     if (lockOccurredAt.checked) {
       if (!occurredAt.value) occurredAt.value = localNowInputValue();
@@ -1527,13 +1978,14 @@ function setBatchClosePresetState(value) {
     }
   });
   setBatchClosePresetState(aggregateCloseTime.value);
-  aggregateCloseTime.disabled = !aggregateMode.checked;
-  batchCloseWrap.style.display = aggregateMode.checked ? "" : "none";
-  batchHint.style.display = aggregateMode.checked ? "" : "none";
-  aggregateNoCutoff.disabled = !aggregateMode.checked;
-  aggregateNoCutoffRow.style.display = aggregateMode.checked ? "" : "none";
+  aggregateCloseTime.disabled = !isActorManager || !aggregateMode.checked;
+  batchCloseWrap.style.display = isActorManager && aggregateMode.checked ? "" : "none";
+  batchHint.style.display = isActorManager && aggregateMode.checked ? "" : "none";
+  aggregateNoCutoff.disabled = !isActorManager || !aggregateMode.checked;
+  aggregateNoCutoffRow.style.display = isActorManager && aggregateMode.checked ? "" : "none";
   aggregateNoCutoff.checked = false;
   aggregateMode.addEventListener("change", () => {
+    if (!isActorManager) return;
     storageSet(STORAGE_KEYS.captureBatchMode, aggregateMode.checked ? "1" : "0");
     batchCloseWrap.style.display = aggregateMode.checked ? "" : "none";
     batchHint.style.display = aggregateMode.checked ? "" : "none";
@@ -1552,13 +2004,15 @@ function setBatchClosePresetState(value) {
   function resetCaptureFormAfterSave() {
     clearCaptureDraft();
     notes.value = "";
-    proofs.value = "";
-    if (lockOccurredAt.checked) {
+    if (proofs) proofs.value = "";
+    clearEmployeeCaptureProofs();
+    renderEmployeeProofs();
+    if (isActorManager && lockOccurredAt.checked) {
       storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
     } else {
       occurredAt.value = localNowInputValue();
     }
-    reportedBy.value = "";
+    if (isActorManager) reportedBy.value = "";
     fromQuality.value = "";
     toQuality.value = "";
     fromSku.value = "";
@@ -1598,11 +2052,11 @@ function setBatchClosePresetState(value) {
           msg.appendChild(notice("error", "Fecha/hora invalida."));
           return;
         }
-        if (!movementTypesForActor().includes(currentMode)) {
+        if (!availableMovementTypes.includes(currentMode)) {
           msg.appendChild(notice("error", "No tienes permiso para ese tipo de movimiento."));
           return;
         }
-        const isAggregateMode = aggregateMode.checked;
+        const isAggregateMode = isActorManager && aggregateMode.checked;
         const aggregateDtIso = isAggregateMode ? buildBatchOccurredIso(dtInputValue, aggregateCloseTime.value) : null;
         if (isAggregateMode && !aggregateDtIso) {
           msg.appendChild(notice("error", "Hora de cierre invalida para el registro agregado."));
@@ -1618,7 +2072,9 @@ function setBatchClosePresetState(value) {
         const aggregateSuffix = isAggregateMode && !isMarked ? ` [AGREGADO] registrado al cierre ${closeTime}` : "";
         const finalNotes = isAggregateMode ? `${noteBase}${aggregateSuffix}`.trim() : noteBase;
 
-        const files = Array.from(proofs.files || []);
+        const files = isActorManager
+          ? Array.from(proofs?.files || [])
+          : (state.captureEmployeeProofs || []).map((item) => item.file).filter(Boolean);
         if (hasProofRequirement() && files.length === 0) {
           msg.appendChild(notice("error", "Como empleado, debes adjuntar evidencia para guardar el movimiento."));
           return;
@@ -1649,6 +2105,9 @@ function setBatchClosePresetState(value) {
           const product_id = ln.product_id;
           const quality_id = ln.quality_id;
           const w = Number(ln.weight_kg);
+          if (!isActorManager && currentMode !== "traspaso_sku" && !sku_id) {
+            return msg.appendChild(notice("error", `Linea ${i + 1}: elige un SKU.`));
+          }
           if (currentMode !== "traspaso_sku" && !product_id) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un producto.`));
           if (currentMode !== "traspaso_calidad" && currentMode !== "traspaso_sku" && !quality_id) {
             return msg.appendChild(notice("error", `Linea ${i + 1}: elige una calidad.`));
@@ -1659,9 +2118,12 @@ function setBatchClosePresetState(value) {
           if (currentMode !== "traspaso_calidad") row.quality_id = quality_id || null;
 
           if (currentMode === "venta") {
-            const pm = ln.price_model;
+            const pm = !isActorManager ? "per_box" : ln.price_model;
             const up = Number(ln.unit_price);
             const b = ln.boxes ? Number(ln.boxes) : null;
+            if (!isActorManager && !employeeSaleSkuIds.has(sku_id)) {
+              return msg.appendChild(notice("error", `Linea ${i + 1}: este SKU no está autorizado para venta de empleado.`));
+            }
             if (!pm) return msg.appendChild(notice("error", `Linea ${i + 1}: elige un modelo de precio.`));
             if (!Number.isFinite(up) || up < 0) return msg.appendChild(notice("error", `Linea ${i + 1}: precio unitario invalido.`));
             if (pm === "per_box") {
@@ -1921,35 +2383,47 @@ function setBatchClosePresetState(value) {
   const card = h("div", { class: "col" }, [
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: "Nuevo movimiento" }),
-      h("div", { class: "muted", text: "Todo se registra en kg. Evidencia (WhatsApp) opcional." }),
+      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
+      !isActorManager ? notice("warn", "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
       msg,
       pills.el,
       h("div", { class: "divider" }),
       h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), ...(Array.isArray(reportedByField) ? reportedByField : [reportedByField])]),
-      h(
-        "label",
-        { class: "muted checkrow" },
-        [lockOccurredAt, h("span", { text: "Mantener fecha/hora fija despues de guardar." })]
-      ),
-      h(
-        "label",
-        { class: "muted checkrow" },
-        [aggregateMode, h("span", { text: "Registro agregado del día (lote). Se usa solo si no hubo corte físico." })]
-      ),
-      aggregateNoCutoffRow,
-      batchCloseWrap,
-      batchHint,
+      isActorManager
+        ? h(
+            "label",
+            { class: "muted checkrow" },
+            [lockOccurredAt, h("span", { text: "Mantener fecha/hora fija despues de guardar." })]
+          )
+        : null,
+      isActorManager
+        ? h(
+            "label",
+            { class: "muted checkrow" },
+            [aggregateMode, h("span", { text: "Registro agregado del día (lote). Se usa solo si no hubo corte físico." })]
+          )
+        : null,
+      isActorManager ? aggregateNoCutoffRow : null,
+      isActorManager ? batchCloseWrap : null,
+      isActorManager ? batchHint : null,
       field("Notas", notes),
       currencySection,
       traspasoSection,
       traspasoSkuSection,
-      ajusteSection,
+      isActorManager ? ajusteSection : null,
       h("div", { class: "divider" }),
       h("div", { class: "row-wrap" }, [h("div", { class: "h1", text: "Lineas" }), h("div", { class: "spacer" }), addLineBtn]),
       linesWrap,
       h("div", { class: "divider" }),
-      field("Evidencia (fotos)", proofs),
+      isActorManager
+        ? field("Evidencia (fotos)", proofs)
+        : h("div", { class: "col" }, [
+            h("div", { class: "h1", text: "Evidencia (foto)" }),
+            employeeProofMsg,
+            employeeProofActions,
+            employeeProofsWrap,
+          ]),
       proofsHint,
       h("div", { class: "row-wrap" }, [submitBtn]),
     ]),
@@ -4830,7 +5304,7 @@ async function pageSettings(pageCtx) {
     placeholder: "Sin límite",
   });
   const accessAllowAllTraspaso = h("input", { type: "checkbox" });
-  accessAllowAllTraspaso.checked = true;
+  accessAllowAllTraspaso.checked = false;
   syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllTraspaso);
   accessRole.addEventListener("change", () => syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllTraspaso));
 
@@ -4885,7 +5359,7 @@ async function pageSettings(pageCtx) {
         accessRole.value = "employee";
         accessEmployee.value = "";
         accessMermaLimit.value = "";
-        accessAllowAllTraspaso.checked = true;
+        accessAllowAllTraspaso.checked = false;
         syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllTraspaso);
         employeeAccessMsg.appendChild(notice("ok", "Acceso agregado."));
         await loadAccessControlData();
@@ -5084,6 +5558,7 @@ async function pageSettings(pageCtx) {
       class: "btn btn-danger",
       type: "button",
       onclick: async () => {
+        clearEmployeeCaptureProofs();
         await supabase.auth.signOut();
         navTo("login");
       },
@@ -5315,6 +5790,7 @@ async function boot() {
   let authSyncToken = 0;
   supabase.auth.onAuthStateChange((_event, session) => {
     const token = ++authSyncToken;
+    clearEmployeeCaptureProofs();
     state.session = session;
     state.masterLoaded = false;
     state.actorLoaded = false;
