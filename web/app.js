@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.16";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.16";
+import * as cfg from "./config.js?v=2026.03.14.19";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.19";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.16";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.19";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -90,6 +90,8 @@ const state = {
   },
   actorLoaded: false,
   captureSubmitting: false,
+  captureFlashNotice: null,
+  captureNextMode: null,
 };
 
 const IS_MOBILE_DEVICE = typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(String(navigator.userAgent || ""));
@@ -1569,6 +1571,10 @@ async function pageCapture(pageCtx) {
   const employees = state.employees.filter((e) => e.is_active).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
   const msg = h("div");
+  if (state.captureFlashNotice?.text) {
+    msg.appendChild(notice(state.captureFlashNotice.kind || "", String(state.captureFlashNotice.text)));
+    state.captureFlashNotice = null;
+  }
 
   if (products.length === 0 || qualities.length === 0) {
     const card = h("div", { class: "card col" }, [
@@ -1925,9 +1931,13 @@ function setBatchClosePresetState(value) {
 
   const pills = movementTypePills({
     allowed: availableMovementTypes,
-    initial: availableMovementTypes[0] || "venta",
+    initial:
+      (state.captureNextMode && availableMovementTypes.includes(String(state.captureNextMode))
+        ? String(state.captureNextMode)
+        : availableMovementTypes[0]) || "venta",
     onChange: (mt) => updateMode(mt),
   });
+  state.captureNextMode = null;
 
   let currentMode = pills.get();
   const linesWrap = h("div", { class: "col" });
@@ -2264,6 +2274,7 @@ function setBatchClosePresetState(value) {
       type: "button",
       onclick: async () => {
         if (isSubmitting) return;
+        let shouldRefreshCaptureAfterSuccess = false;
         msg.replaceChildren();
         clearProofPickerOpen();
         if (draftSaveTimer) {
@@ -2571,16 +2582,24 @@ function setBatchClosePresetState(value) {
           );
           if (rpcErr) throw rpcErr;
 
-          msg.replaceChildren(notice("ok", `Movimiento guardado ${String(newId).slice(0, 8)}...`));
+          const successText = `Movimiento guardado ${String(newId).slice(0, 8)}...`;
+          state.captureFlashNotice = { kind: "ok", text: successText };
+          state.captureNextMode = currentMode;
+          msg.replaceChildren(notice("ok", successText));
           resetCaptureFormAfterSave();
+          shouldRefreshCaptureAfterSuccess = true;
         } catch (e) {
           // If timeout happened but insert actually reached DB, avoid duplicate capture on retry.
           if (movementId) {
             try {
               const { data: existing } = await supabase.from("movements").select("id").eq("id", movementId).maybeSingle();
               if (existing?.id) {
-                msg.replaceChildren(notice("ok", `Movimiento guardado ${String(existing.id).slice(0, 8)}...`));
+                const successText = `Movimiento guardado ${String(existing.id).slice(0, 8)}...`;
+                state.captureFlashNotice = { kind: "ok", text: successText };
+                state.captureNextMode = currentMode;
+                msg.replaceChildren(notice("ok", successText));
                 resetCaptureFormAfterSave();
+                shouldRefreshCaptureAfterSuccess = true;
                 return;
               }
             } catch {
@@ -2604,6 +2623,7 @@ function setBatchClosePresetState(value) {
           );
         } finally {
           setSubmitting(false);
+          if (shouldRefreshCaptureAfterSuccess) scheduleSafeRender();
         }
       },
     },
