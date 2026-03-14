@@ -23,6 +23,61 @@ create trigger trg_workspace_sale_sku_rules_set_updated_at
 before update on public.workspace_sale_sku_rules
 for each row execute function public.set_updated_at();
 
+create or replace function public.current_actor_workspace_id()
+returns uuid
+language sql
+stable
+security definer
+as $$
+  select workspace_id from public.workspace_users where user_id = auth.uid();
+$$;
+
+create or replace function public.current_actor_role()
+returns public.app_role
+language sql
+stable
+security definer
+as $$
+  select role from public.workspace_users where user_id = auth.uid();
+$$;
+
+create or replace function public.current_actor_display_name()
+returns text
+language sql
+stable
+security definer
+as $$
+  select coalesce(
+    display_name,
+    nullif(split_part(auth.jwt() ->> 'email', '@', 1), ''),
+    auth.uid()::text
+  )
+  from public.workspace_users
+  where user_id = auth.uid();
+$$;
+
+create or replace function public.actor_can_access_owner(row_owner uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select exists (
+    select 1
+    from public.workspace_users wu_actor
+    where wu_actor.user_id = auth.uid()
+      and (
+        wu_actor.user_id = row_owner
+        or exists (
+          select 1
+          from public.workspace_users wu_owner
+          where wu_owner.user_id = row_owner
+            and wu_owner.workspace_id = wu_actor.workspace_id
+        )
+      )
+  );
+$$;
+
 create or replace function public.current_actor_allow_all_sale_sku()
 returns boolean
 language sql

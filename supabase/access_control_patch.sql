@@ -86,10 +86,7 @@ language sql
 stable
 security definer
 as $$
-  select coalesce(
-    (select workspace_id from public.workspace_users where user_id = auth.uid()),
-    auth.uid()
-  );
+  select workspace_id from public.workspace_users where user_id = auth.uid();
 $$;
 
 create or replace function public.current_actor_role()
@@ -98,10 +95,7 @@ language sql
 stable
 security definer
 as $$
-  select coalesce(
-    (select role from public.workspace_users where user_id = auth.uid()),
-    'manager'::public.app_role
-  );
+  select role from public.workspace_users where user_id = auth.uid();
 $$;
 
 create or replace function public.current_actor_display_name()
@@ -111,10 +105,12 @@ stable
 security definer
 as $$
   select coalesce(
-    (select display_name from public.workspace_users where user_id = auth.uid()),
+    display_name,
     nullif(split_part(auth.jwt() ->> 'email', '@', 1), ''),
     auth.uid()::text
-  );
+  )
+  from public.workspace_users
+  where user_id = auth.uid();
 $$;
 
 create or replace function public.current_actor_employee_id()
@@ -159,18 +155,20 @@ language sql
 stable
 security definer
 as $$
-  select row_owner = auth.uid()
-    or exists (
-      select 1
-      from public.workspace_users wu_owner
-      where wu_owner.user_id = row_owner
-        and exists (
+  select exists (
+    select 1
+    from public.workspace_users wu_actor
+    where wu_actor.user_id = auth.uid()
+      and (
+        wu_actor.user_id = row_owner
+        or exists (
           select 1
-          from public.workspace_users wu_actor
-          where wu_actor.user_id = auth.uid()
-            and wu_actor.workspace_id = wu_owner.workspace_id
+          from public.workspace_users wu_owner
+          where wu_owner.user_id = row_owner
+            and wu_owner.workspace_id = wu_actor.workspace_id
         )
-    );
+      )
+  );
 $$;
 
 create or replace function public.actor_can_traspaso_sku(from_sku_id uuid, to_sku_id uuid)

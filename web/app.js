@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.08";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.08";
+import * as cfg from "./config.js?v=2026.03.14.11";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.11";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.08";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.11";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -61,10 +61,12 @@ const MOVEMENT_TYPES = {
 const MOVEMENT_TYPES_BY_ROLE = {
   manager: ["entrada", "venta", "merma", "traspaso_sku", "traspaso_calidad", "ajuste"],
   employee: ["venta", "merma", "traspaso_sku"],
+  none: [],
 };
 const ROUTE_BY_ROLE = {
   manager: null,
   employee: new Set(["capture"]),
+  none: new Set(),
 };
 
 const state = {
@@ -77,12 +79,14 @@ const state = {
   masterLoaded: false,
   actor: {
     workspace_id: null,
-    role: "manager",
+    role: null,
     employee_id: null,
     merma_limit_kg: null,
     allow_all_sale_sku: true,
     allow_all_traspaso_sku: true,
     display_name: null,
+    has_access: false,
+    access_reason: null,
   },
   actorLoaded: false,
   captureSubmitting: false,
@@ -183,8 +187,10 @@ function route() {
 }
 
 function actorRole() {
-  const role = String(state.actor?.role || "manager").toLowerCase();
-  return role === "employee" ? "employee" : "manager";
+  const role = String(state.actor?.role || "").toLowerCase();
+  if (role === "employee") return "employee";
+  if (role === "manager") return "manager";
+  return "none";
 }
 
 function isManager() {
@@ -256,12 +262,14 @@ function normalizeActorRoleError(message) {
 function defaultActorState() {
   return {
     workspace_id: null,
-    role: "manager",
+    role: null,
     employee_id: null,
     merma_limit_kg: null,
     allow_all_sale_sku: true,
     allow_all_traspaso_sku: true,
     display_name: null,
+    has_access: false,
+    access_reason: null,
   };
 }
 
@@ -362,6 +370,12 @@ function clearEmployeeCaptureProofs() {
     revokeObjectUrl(item?.preview_url);
   }
   state.captureEmployeeProofs = [];
+}
+
+async function signOutCurrentUser() {
+  clearEmployeeCaptureProofs();
+  await supabase.auth.signOut();
+  navTo("login");
 }
 
 function employeeCaptureStampTime(date = new Date()) {
@@ -929,23 +943,59 @@ async function loadActorContext() {
 
   state.actorLoaded = false;
   try {
-    const { data, error } = await withTimeout(supabase.rpc("get_actor_context"), 7000, "Cargando permisos");
+    const { data, error } = await withTimeout(
+      supabase
+        .from("workspace_users")
+        .select("workspace_id,role,employee_id,merma_limit_kg,allow_all_sale_sku,allow_all_traspaso_sku,display_name")
+        .eq("user_id", state.session.user.id)
+        .maybeSingle(),
+      7000,
+      "Cargando permisos"
+    );
     if (error) throw error;
+
+    if (!data?.workspace_id || !data?.role) {
+      state.actor = {
+        ...defaultActorState(),
+        has_access: false,
+        access_reason: "not_assigned",
+      };
+      return;
+    }
 
     const actor = {
       workspace_id: data?.workspace_id || null,
-      role: String(data?.role || "manager").toLowerCase() === "employee" ? "employee" : "manager",
+      role: String(data?.role || "").toLowerCase() === "employee" ? "employee" : "manager",
       employee_id: data?.employee_id || null,
       merma_limit_kg: data?.merma_limit_kg ?? null,
       allow_all_sale_sku: data?.allow_all_sale_sku !== false,
       allow_all_traspaso_sku: data?.allow_all_traspaso_sku !== false,
       display_name: data?.display_name || null,
+      has_access: true,
+      access_reason: null,
     };
     state.actor = actor;
-  } catch {
-    // Backward compatibility: if this DB does not yet support actor context,
-    // keep manager mode to avoid blocking old projects.
-    state.actor = defaultActorState();
+  } catch (error) {
+    const message = String(error?.message || error || "").toLowerCase();
+    if (
+      (message.includes("relation") && message.includes("workspace_users"))
+      || (message.includes("workspace_users") && message.includes("does not exist"))
+    ) {
+      // Backward compatibility for databases that predate workspace access control.
+      state.actor = {
+        workspace_id: state.session.user.id,
+        role: "manager",
+        employee_id: null,
+        merma_limit_kg: null,
+        allow_all_sale_sku: true,
+        allow_all_traspaso_sku: true,
+        display_name: null,
+        has_access: true,
+        access_reason: null,
+      };
+    } else {
+      throw error;
+    }
   } finally {
     state.actorLoaded = true;
   }
@@ -1007,6 +1057,20 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
     }
   }
 
+  const topbarSignOutBtn = state.session
+    ? h(
+        "button",
+        {
+          class: "btn btn-ghost topbar-signout",
+          type: "button",
+          onclick: async () => {
+            await signOutCurrentUser();
+          },
+        },
+        ["Cerrar sesion"]
+      )
+    : null;
+
   const topbar = h("div", { class: "topbar" }, [
     h("div", { class: "topbar-inner" }, [
       h("div", { class: "brand-block" }, [
@@ -1023,6 +1087,7 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
       h("div", { class: "topbar-meta right" }, [
         state.session ? h("div", { class: "brand-sub mono", text: state.session.user.email || "" }) : h("div", { class: "brand-sub", text: "" }),
         h("div", { class: "app-version mono", text: `Build ${APP_VERSION}` }),
+        topbarSignOutBtn,
       ]),
     ]),
   ]);
@@ -5767,9 +5832,7 @@ async function pageSettings(pageCtx) {
       class: "btn btn-danger",
       type: "button",
       onclick: async () => {
-        clearEmployeeCaptureProofs();
-        await supabase.auth.signOut();
-        navTo("login");
+        await signOutCurrentUser();
       },
     },
     ["Cerrar sesion"]
@@ -5899,6 +5962,38 @@ async function render() {
   if (!state.session) {
     if (r !== "login") navTo("login");
     await pageLogin(createPageContext("login"));
+    return;
+  }
+
+  if (!state.actor?.has_access) {
+    const signOutBtn = h(
+      "button",
+      {
+        class: "btn btn-danger",
+        type: "button",
+        onclick: async () => {
+          await signOutCurrentUser();
+        },
+      },
+      ["Cerrar sesion"]
+    );
+    layout(
+      "Acceso no autorizado",
+      h("div", { class: "card col" }, [
+        h("div", { class: "h1", text: "Acceso no autorizado" }),
+        h("div", {
+          class: "muted",
+          text: "Este usuario existe en Supabase Auth, pero no tiene acceso asignado dentro de FST INV.",
+        }),
+        h("div", {
+          class: "muted",
+          text: "Agrega su Auth User ID en Ajustes > Acceso de empleados y vuelve a iniciar sesión.",
+        }),
+        state.session?.user?.email ? h("div", { class: "muted mono", text: `Usuario: ${state.session.user.email}` }) : null,
+        h("div", { class: "row-wrap" }, [signOutBtn]),
+      ]),
+      { showNav: false }
+    );
     return;
   }
 
