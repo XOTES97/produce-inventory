@@ -2818,9 +2818,9 @@ async function pageMovements(pageCtx) {
 
 async function openMovementModal(m, pageCtx) {
   const isActive = () => isPageContextActive(pageCtx);
-	  const backdrop = h("div", { class: "modal-backdrop" });
-	  const modal = h("div", { class: "modal col" });
-	  backdrop.appendChild(modal);
+  const backdrop = h("div", { class: "modal-backdrop" });
+  const modal = h("div", { class: "modal col" });
+  backdrop.appendChild(modal);
 
   function close() {
     backdrop.remove();
@@ -2829,70 +2829,70 @@ async function openMovementModal(m, pageCtx) {
     if (e.target === backdrop) close();
   });
 
-	  const canDeleteMovement = isManager();
-	  const headerButtons = [];
+  const canDeleteMovement = isManager();
+  const headerButtons = [];
 
-	  if (canDeleteMovement) {
-	    headerButtons.push(
-	      h(
-	        "button",
-	        {
-	          class: "btn btn-danger",
-	          type: "button",
-	          onclick: async () => {
-	            if (!confirm("Eliminar este movimiento? Esto ajustara el inventario y borrara la evidencia (si existe).")) return;
-	            const attachments = m.movement_attachments || [];
-	            const paths = attachments.map((a) => a.storage_path).filter(Boolean);
-	            const { error: delErr } = await supabase.rpc("delete_movement", { movement_id: m.id });
-	            if (delErr) return alert(delErr.message);
+  if (canDeleteMovement) {
+    headerButtons.push(
+      h(
+        "button",
+        {
+          class: "btn btn-danger",
+          type: "button",
+          onclick: async () => {
+            if (!confirm("Eliminar este movimiento? Esto ajustara el inventario y borrara la evidencia (si existe).")) return;
+            const attachments = m.movement_attachments || [];
+            const paths = attachments.map((a) => a.storage_path).filter(Boolean);
+            const { error: delErr } = await supabase.rpc("delete_movement", { movement_id: m.id });
+            if (delErr) return alert(delErr.message);
 
-	            // Best-effort Storage cleanup (does not affect inventory).
-	            if (paths.length > 0) {
-	              try {
-	                await supabase.storage.from("movement-proofs").remove(paths);
-	              } catch {
-	                // ignore
-	              }
-	            }
-	            close();
-	            scheduleSafeRender();
-	          },
-	        },
-	        ["Eliminar"]
-	      )
-	    );
-	  }
+            // Best-effort Storage cleanup (does not affect inventory).
+            if (paths.length > 0) {
+              try {
+                await supabase.storage.from("movement-proofs").remove(paths);
+              } catch {
+                // ignore
+              }
+            }
+            close();
+            scheduleSafeRender();
+          },
+        },
+        ["Eliminar"]
+      )
+    );
+  }
 
-	  headerButtons.push(h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]));
+  headerButtons.push(h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]));
 
-	  const header = h("div", { class: "row-wrap modal-header" }, [
-	    h("div", { class: "col", style: "gap: 4px" }, [
-	      h("div", { style: "font-weight: 820; font-size: 16px", text: movementLabel(m.movement_type) }),
-	      h("div", { class: "muted", text: formatOccurredAt(m.occurred_at) }),
-	    ]),
-	    h("div", { class: "spacer" }),
-	    ...headerButtons,
-	  ]);
+  const header = h("div", { class: "row-wrap modal-header" }, [
+    h("div", { class: "col", style: "gap: 4px" }, [
+      h("div", { style: "font-weight: 820; font-size: 16px", text: movementLabel(m.movement_type) }),
+      h("div", { class: "muted", text: formatOccurredAt(m.occurred_at) }),
+    ]),
+    h("div", { class: "spacer" }),
+    ...headerButtons,
+  ]);
 
-	  const info = h("div", { class: "notice" }, [
-	    h("div", { class: "row-wrap" }, [
-	      h("div", { class: "muted", text: `ID: ${String(m.id).slice(0, 8)}...` }),
-	      h("div", { class: "spacer" }),
+  const info = h("div", { class: "notice" }, [
+    h("div", { class: "row-wrap" }, [
+      h("div", { class: "muted", text: `ID: ${String(m.id).slice(0, 8)}...` }),
+      h("div", { class: "spacer" }),
       m.movement_type === "venta"
         ? h("div", { class: "muted", text: `Moneda: ${m.currency || DEFAULT_CURRENCY}` })
         : null,
     ]),
-	    m.reported_by_employee_id
-	      ? h("div", { class: "muted", text: `Empleado: ${employeeName(m.reported_by_employee_id)}` })
-	      : null,
-	    m.movement_type === "traspaso_sku" && m.from_sku_id && m.to_sku_id
-	      ? h("div", { class: "muted", text: `Traspaso SKU: ${skuLabel(m.from_sku_id)} -> ${skuLabel(m.to_sku_id)}` })
-	      : null,
-	    m.movement_type === "traspaso_calidad" && m.from_quality_id && m.to_quality_id
-	      ? h("div", { class: "muted", text: `Traspaso: ${qualityName(m.from_quality_id)} -> ${qualityName(m.to_quality_id)}` })
-	      : null,
-	    m.notes ? h("div", { text: m.notes }) : h("div", { class: "muted", text: "Sin notas." }),
-	  ]);
+    m.reported_by_employee_id
+      ? h("div", { class: "muted", text: `Empleado: ${employeeName(m.reported_by_employee_id)}` })
+      : null,
+    m.movement_type === "traspaso_sku" && m.from_sku_id && m.to_sku_id
+      ? h("div", { class: "muted", text: `Traspaso SKU: ${skuLabel(m.from_sku_id)} -> ${skuLabel(m.to_sku_id)}` })
+      : null,
+    m.movement_type === "traspaso_calidad" && m.from_quality_id && m.to_quality_id
+      ? h("div", { class: "muted", text: `Traspaso: ${qualityName(m.from_quality_id)} -> ${qualityName(m.to_quality_id)}` })
+      : null,
+    m.notes ? h("div", { text: m.notes }) : h("div", { class: "muted", text: "Sin notas." }),
+  ]);
 
   const lines = m.movement_lines || [];
   const linesTable = h("table", { class: "table" }, [
@@ -2937,34 +2937,6 @@ async function openMovementModal(m, pageCtx) {
   const attachments = m.movement_attachments || [];
   const proofsWrap = h("div", { class: "col" });
 
-  if (attachments.length === 0) {
-    proofsWrap.appendChild(notice("warn", "Sin evidencia."));
-  } else {
-    proofsWrap.appendChild(notice("", "Cargando evidencia..."));
-    const signed = [];
-    for (let i = 0; i < attachments.length; i++) {
-      const a = attachments[i];
-      const { data } = await supabase.storage.from("movement-proofs").createSignedUrl(a.storage_path, 60 * 30);
-      if (!isActive() || !document.body.contains(backdrop)) return;
-      signed.push({ ...a, signedUrl: data?.signedUrl || null });
-      await maybeYield(i + 1, 3);
-    }
-
-    if (!isActive() || !document.body.contains(backdrop)) return;
-    const visibleSigned = signed.filter((a) => a.signedUrl);
-    const extraCount = Math.max(0, visibleSigned.length - 6);
-    proofsWrap.replaceChildren(
-      h("div", { class: "thumbgrid" }, [
-        ...visibleSigned.slice(0, 6).map((a) =>
-          h("a", { href: a.signedUrl, target: "_blank", rel: "noreferrer" }, [
-            h("img", { class: "thumb", src: a.signedUrl, alt: a.original_filename || "proof" }),
-          ])
-        ),
-      ]),
-      extraCount > 0 ? h("div", { class: "muted", text: `+ ${extraCount} evidencia(s) adicional(es)` }) : null,
-    );
-  }
-
   modal.appendChild(header);
   modal.appendChild(info);
   modal.appendChild(h("div", { class: "divider" }));
@@ -2982,6 +2954,54 @@ async function openMovementModal(m, pageCtx) {
   );
 
   document.body.appendChild(backdrop);
+
+  if (attachments.length === 0) {
+    proofsWrap.replaceChildren(notice("warn", "Sin evidencia."));
+    return;
+  }
+
+  proofsWrap.replaceChildren(notice("", "Cargando evidencia..."));
+
+  void (async () => {
+    try {
+      const signed = [];
+      for (let i = 0; i < attachments.length; i++) {
+        const a = attachments[i];
+        const { data, error } = await supabase.storage.from("movement-proofs").createSignedUrl(a.storage_path, 60 * 30);
+        if (!isActive() || !document.body.contains(backdrop)) return;
+        if (error) {
+          console.warn("Could not create signed URL for movement proof", a.storage_path, error);
+        } else {
+          signed.push({ ...a, signedUrl: data?.signedUrl || null });
+        }
+        await maybeYield(i + 1, 3);
+      }
+
+      if (!isActive() || !document.body.contains(backdrop)) return;
+
+      const visibleSigned = signed.filter((a) => a.signedUrl);
+      if (visibleSigned.length === 0) {
+        proofsWrap.replaceChildren(notice("warn", "No se pudo cargar la evidencia, pero el movimiento sigue disponible."));
+        return;
+      }
+
+      const extraCount = Math.max(0, visibleSigned.length - 6);
+      proofsWrap.replaceChildren(
+        h("div", { class: "thumbgrid" }, [
+          ...visibleSigned.slice(0, 6).map((a) =>
+            h("a", { href: a.signedUrl, target: "_blank", rel: "noreferrer" }, [
+              h("img", { class: "thumb", src: a.signedUrl, alt: a.original_filename || "proof" }),
+            ])
+          ),
+        ]),
+        extraCount > 0 ? h("div", { class: "muted", text: `+ ${extraCount} evidencia(s) adicional(es)` }) : null
+      );
+    } catch (error) {
+      console.error("Failed to load movement evidence", error);
+      if (!isActive() || !document.body.contains(backdrop)) return;
+      proofsWrap.replaceChildren(notice("warn", "No se pudo cargar la evidencia, pero el movimiento sigue disponible."));
+    }
+  })();
 }
 
 async function pageInventory(pageCtx) {
