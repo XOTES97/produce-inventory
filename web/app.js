@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.24";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.24";
+import * as cfg from "./config.js?v=2026.03.14.25";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.25";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.24";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.25";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1175,6 +1175,10 @@ function field(labelText, inputEl) {
   return h("div", {}, [h("label", { text: labelText }), inputEl]);
 }
 
+function labeledField(labelText, inputEl, inputId) {
+  return h("div", {}, [h("label", { for: inputId, text: labelText }), inputEl]);
+}
+
 function tableScroll(tableEl) {
   return h("div", { style: "overflow-x:auto; -webkit-overflow-scrolling: touch" }, [tableEl]);
 }
@@ -1195,10 +1199,11 @@ function optionList(items, { includeEmpty = true, emptyLabel = "Select..." } = {
 async function pageLogin() {
   let submit = null;
   const email = h("input", {
-    type: "email",
-    name: "email",
+    id: "login-username",
+    type: "text",
+    name: "username",
     placeholder: "Email",
-    autocomplete: "email",
+    autocomplete: "username",
     autocapitalize: "none",
     autocorrect: "off",
     spellcheck: "false",
@@ -1206,6 +1211,7 @@ async function pageLogin() {
     enterkeyhint: "next",
   });
   const password = h("input", {
+    id: "login-password",
     type: "password",
     name: "password",
     placeholder: "Password",
@@ -1217,6 +1223,30 @@ async function pageLogin() {
   });
   const msg = h("div");
 
+  async function handleLoginSubmit() {
+    msg.replaceChildren();
+    const e = String(email.value || "").trim();
+    const p = String(password.value || "");
+    if (!e || !p) {
+      msg.appendChild(notice("warn", "Ingresa tu email y password."));
+      return;
+    }
+    const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
+    if (error) {
+      msg.appendChild(notice("error", error.message));
+      if (String(error.message || "").toLowerCase().includes("invalid api key")) {
+        msg.appendChild(
+          notice(
+            "warn",
+            "Esto casi siempre significa que tu SUPABASE_URL y SUPABASE_ANON_KEY no corresponden al mismo proyecto, o que el key tiene espacios/saltos de linea. Re-copia ambos desde Supabase: Project Settings -> API (Project URL + anon public key)."
+          )
+        );
+      }
+      return;
+    }
+    navTo("capture");
+  }
+
   email.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
@@ -1225,47 +1255,36 @@ async function pageLogin() {
   password.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    submit?.click();
+    void handleLoginSubmit();
   });
 
   submit = h(
     "button",
     {
       class: "btn btn-primary",
-      onclick: async () => {
-        msg.replaceChildren();
-        const e = String(email.value || "").trim();
-        const p = String(password.value || "");
-        if (!e || !p) {
-          msg.appendChild(notice("warn", "Ingresa tu email y password."));
-          return;
-        }
-        const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
-        if (error) {
-          msg.appendChild(notice("error", error.message));
-          if (String(error.message || "").toLowerCase().includes("invalid api key")) {
-            msg.appendChild(
-              notice(
-                "warn",
-                "Esto casi siempre significa que tu SUPABASE_URL y SUPABASE_ANON_KEY no corresponden al mismo proyecto, o que el key tiene espacios/saltos de linea. Re-copia ambos desde Supabase: Project Settings -> API (Project URL + anon public key)."
-              )
-            );
-          }
-          return;
-        }
-        navTo("capture");
-      },
+      type: "submit",
     },
     ["Iniciar sesion"]
   );
 
+  const form = h("form", {
+    autocomplete: "on",
+    novalidate: "true",
+    onsubmit: (event) => {
+      event.preventDefault();
+      void handleLoginSubmit();
+    },
+  }, [
+    msg,
+    labeledField("Email", email, "login-username"),
+    labeledField("Password", password, "login-password"),
+    h("div", { class: "row-wrap" }, [submit]),
+  ]);
+
   const card = h("div", { class: "card col" }, [
     h("div", { class: "h1", text: "Iniciar sesion" }),
     h("div", { class: "muted", text: "Usa tu usuario de Supabase Auth (email/password)." }),
-    msg,
-    field("Email", email),
-    field("Password", password),
-    h("div", { class: "row-wrap" }, [submit]),
+    form,
   ]);
 
   layout(ROUTE_TITLES.login, card, { showNav: false });
@@ -6321,6 +6340,10 @@ let renderPending = false;
 let appVisibilityResumeScheduled = false;
 let isAppHidden = false;
 
+function isLoginInteractionSensitive() {
+  return !state.session && route() === "login";
+}
+
 function isRenderThrottled() {
   return isAppHidden || !isAppInForeground() || isProofPickerOpen || state.captureSubmitting;
 }
@@ -6448,6 +6471,10 @@ async function boot() {
   window.addEventListener("online", () => scheduleSafeRender());
   window.addEventListener("focus", () => {
     recoverMobileUiState();
+    if (isLoginInteractionSensitive()) {
+      isAppHidden = false;
+      return;
+    }
     if (isAppInForeground()) {
       isAppHidden = false;
       scheduleResumeRefresh();
@@ -6466,6 +6493,7 @@ async function boot() {
   window.addEventListener("pageshow", () => {
     recoverMobileUiState();
     isAppHidden = false;
+    if (isLoginInteractionSensitive()) return;
     scheduleResumeRefresh();
     scheduleSafeRender();
   });
@@ -6475,6 +6503,10 @@ async function boot() {
     if (hidden) {
       clearProofPickerOpen();
       clearRenderTimer();
+      return;
+    }
+    if (isLoginInteractionSensitive()) {
+      isAppHidden = false;
       return;
     }
     if (!hidden && route() !== "capture") {
