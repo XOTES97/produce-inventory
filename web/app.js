@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.05";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.05";
+import * as cfg from "./config.js?v=2026.03.14.06";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.06";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.05";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.06";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1237,7 +1237,7 @@ function setBatchClosePresetState(value) {
   const aggregateNoCutoff = h("input", { type: "checkbox" });
   const aggregateNoCutoffRow = h(
     "label",
-    { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
+    { class: "muted checkrow" },
     [aggregateNoCutoff, h("span", { text: "Confirmo que este movimiento agregado NO incluye periodo de corte físico." })]
   );
   const batchCloseWrap = h("div", { class: "col" }, [field("Hora de cierre", aggregateCloseTime), batchClosePresetWrap]);
@@ -1929,12 +1929,12 @@ function setBatchClosePresetState(value) {
       h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), ...(Array.isArray(reportedByField) ? reportedByField : [reportedByField])]),
       h(
         "label",
-        { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
+        { class: "muted checkrow" },
         [lockOccurredAt, h("span", { text: "Mantener fecha/hora fija despues de guardar." })]
       ),
       h(
         "label",
-        { class: "muted", style: "display:flex; align-items:center; gap:8px; margin-top:-2px" },
+        { class: "muted checkrow" },
         [aggregateMode, h("span", { text: "Registro agregado del día (lote). Se usa solo si no hubo corte físico." })]
       ),
       aggregateNoCutoffRow,
@@ -4099,7 +4099,7 @@ async function pageCutoffs(pageCtx) {
   });
 
   const lineMeasuredAtLockRow = h("div", { class: "muted" }, [
-    h("label", { class: "row-wrap", style: "align-items:center; justify-content:flex-start; gap: 8px;" }, [
+    h("label", { class: "checkrow" }, [
       lineMeasuredAtLock,
       h("span", { text: "Fijar fecha/hora para siguientes pesajes." }),
     ]),
