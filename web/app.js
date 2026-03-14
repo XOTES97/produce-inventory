@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.13";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.13";
+import * as cfg from "./config.js?v=2026.03.14.14";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.14";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.13";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.14";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1168,11 +1168,42 @@ function optionList(items, { includeEmpty = true, emptyLabel = "Select..." } = {
 }
 
 async function pageLogin() {
-  const email = h("input", { type: "email", placeholder: "Email" });
-  const password = h("input", { type: "password", placeholder: "Password" });
+  let submit = null;
+  const email = h("input", {
+    type: "email",
+    name: "email",
+    placeholder: "Email",
+    autocomplete: "email",
+    autocapitalize: "none",
+    autocorrect: "off",
+    spellcheck: "false",
+    inputmode: "email",
+    enterkeyhint: "next",
+  });
+  const password = h("input", {
+    type: "password",
+    name: "password",
+    placeholder: "Password",
+    autocomplete: "current-password",
+    autocapitalize: "none",
+    autocorrect: "off",
+    spellcheck: "false",
+    enterkeyhint: "go",
+  });
   const msg = h("div");
 
-  const submit = h(
+  email.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    password.focus();
+  });
+  password.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    submit?.click();
+  });
+
+  submit = h(
     "button",
     {
       class: "btn btn-primary",
