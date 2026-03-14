@@ -24,6 +24,7 @@ create table if not exists public.workspace_users (
   employee_id uuid references public.employees(id),
   display_name text,
   merma_limit_kg numeric(12,3),
+  allow_all_sale_sku boolean not null default true,
   allow_all_traspaso_sku boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -36,6 +37,25 @@ create index if not exists workspace_users_workspace_idx on public.workspace_use
 drop trigger if exists trg_workspace_users_set_updated_at on public.workspace_users;
 create trigger trg_workspace_users_set_updated_at
 before update on public.workspace_users
+for each row execute function public.set_updated_at();
+
+create table if not exists public.workspace_sale_sku_rules (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references public.workspaces(id) on delete cascade,
+  sku_id uuid not null references public.skus(id) on delete cascade,
+  is_allowed boolean not null default true,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (workspace_id, sku_id)
+);
+
+create index if not exists workspace_sale_sku_rules_workspace_idx on public.workspace_sale_sku_rules(workspace_id);
+create index if not exists workspace_sale_sku_rules_sku_idx on public.workspace_sale_sku_rules(sku_id);
+
+drop trigger if exists trg_workspace_sale_sku_rules_set_updated_at on public.workspace_sale_sku_rules;
+create trigger trg_workspace_sale_sku_rules_set_updated_at
+before update on public.workspace_sale_sku_rules
 for each row execute function public.set_updated_at();
 
 create table if not exists public.workspace_traspaso_sku_rules (
@@ -115,6 +135,15 @@ as $$
   select merma_limit_kg from public.workspace_users where user_id = auth.uid();
 $$;
 
+create or replace function public.current_actor_allow_all_sale_sku()
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select coalesce(allow_all_sale_sku, true) from public.workspace_users where user_id = auth.uid();
+$$;
+
 create or replace function public.current_actor_allow_all_traspaso_sku()
 returns boolean
 language sql
@@ -165,6 +194,26 @@ as $$
     end;
 $$;
 
+create or replace function public.actor_can_sell_sku(target_sku_id uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select
+    case
+      when public.current_actor_role() = 'manager' then true
+      when public.current_actor_allow_all_sale_sku() then true
+      else exists (
+        select 1
+        from public.workspace_sale_sku_rules r
+        where r.workspace_id = public.current_actor_workspace_id()
+          and r.sku_id = target_sku_id
+          and r.is_allowed
+      )
+    end;
+$$;
+
 create or replace function public.get_actor_context()
 returns jsonb
 language sql
@@ -177,6 +226,7 @@ as $$
     'display_name', public.current_actor_display_name(),
     'employee_id', public.current_actor_employee_id(),
     'merma_limit_kg', public.current_actor_merma_limit_kg(),
+    'allow_all_sale_sku', coalesce(public.current_actor_allow_all_sale_sku(), true),
     'allow_all_traspaso_sku', coalesce(public.current_actor_allow_all_traspaso_sku(), true)
   );
 $$;
@@ -238,6 +288,7 @@ alter table public.movements enable row level security;
 alter table public.movement_lines enable row level security;
 alter table public.movement_attachments enable row level security;
 alter table public.workspace_users enable row level security;
+alter table public.workspace_sale_sku_rules enable row level security;
 alter table public.workspace_traspaso_sku_rules enable row level security;
 
 -- Workspace users can read users in same workspace (for role + limits).
@@ -279,6 +330,51 @@ to authenticated
 using (
   public.current_actor_role() = 'manager'
   and (workspace_id = public.current_actor_workspace_id())
+);
+
+-- Traspaso rules can be managed by manager of the workspace.
+drop policy if exists workspace_sale_sku_rules_select_workspace on public.workspace_sale_sku_rules;
+create policy workspace_sale_sku_rules_select_workspace
+on public.workspace_sale_sku_rules for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.workspace_users wu
+    where wu.user_id = auth.uid()
+      and wu.workspace_id = workspace_sale_sku_rules.workspace_id
+  )
+);
+
+drop policy if exists workspace_sale_sku_rules_insert_manager on public.workspace_sale_sku_rules;
+create policy workspace_sale_sku_rules_insert_manager
+on public.workspace_sale_sku_rules for insert
+to authenticated
+with check (
+  public.current_actor_role() = 'manager'
+  and workspace_id = public.current_actor_workspace_id()
+);
+
+drop policy if exists workspace_sale_sku_rules_update_manager on public.workspace_sale_sku_rules;
+create policy workspace_sale_sku_rules_update_manager
+on public.workspace_sale_sku_rules for update
+to authenticated
+using (
+  public.current_actor_role() = 'manager'
+  and workspace_id = public.current_actor_workspace_id()
+)
+with check (
+  public.current_actor_role() = 'manager'
+  and workspace_id = public.current_actor_workspace_id()
+);
+
+drop policy if exists workspace_sale_sku_rules_delete_manager on public.workspace_sale_sku_rules;
+create policy workspace_sale_sku_rules_delete_manager
+on public.workspace_sale_sku_rules for delete
+to authenticated
+using (
+  public.current_actor_role() = 'manager'
+  and workspace_id = public.current_actor_workspace_id()
 );
 
 -- Traspaso rules can be managed by manager of the workspace.
@@ -864,6 +960,7 @@ begin
         left join public.skus s on s.id = nullif(l->>'sku_id', '')::uuid
         where s.id is null
           or not public.actor_can_access_owner(s.owner_id)
+          or not public.actor_can_sell_sku(s.id)
           or s.default_price_model is distinct from 'per_box'::public.price_model
           or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
           or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
@@ -1143,6 +1240,7 @@ grant select, insert, delete on table public.movement_lines to authenticated;
 grant select, insert, delete on table public.movement_attachments to authenticated;
 grant select, insert, update, delete on table public.workspaces to authenticated;
 grant select, insert, update, delete on table public.workspace_users to authenticated;
+grant select, insert, update, delete on table public.workspace_sale_sku_rules to authenticated;
 grant select, insert, update, delete on table public.workspace_traspaso_sku_rules to authenticated;
 grant select, insert, update, delete on table public.physical_cutoffs to authenticated;
 grant select, insert, update, delete on table public.physical_cutoff_lines to authenticated;

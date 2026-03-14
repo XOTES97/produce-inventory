@@ -80,6 +80,7 @@ const state = {
     role: "manager",
     employee_id: null,
     merma_limit_kg: null,
+    allow_all_sale_sku: true,
     allow_all_traspaso_sku: true,
     display_name: null,
   },
@@ -258,6 +259,7 @@ function defaultActorState() {
     role: "manager",
     employee_id: null,
     merma_limit_kg: null,
+    allow_all_sale_sku: true,
     allow_all_traspaso_sku: true,
     display_name: null,
   };
@@ -935,6 +937,7 @@ async function loadActorContext() {
       role: String(data?.role || "manager").toLowerCase() === "employee" ? "employee" : "manager",
       employee_id: data?.employee_id || null,
       merma_limit_kg: data?.merma_limit_kg ?? null,
+      allow_all_sale_sku: data?.allow_all_sale_sku !== false,
       allow_all_traspaso_sku: data?.allow_all_traspaso_sku !== false,
       display_name: data?.display_name || null,
     };
@@ -1473,10 +1476,27 @@ async function pageCapture(pageCtx) {
   const actorRequiresEmployee = hasProofRequirement();
   const autoEmpId = actorEmployeeId();
   const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
-  const employeeSaleSkus = skus.filter((s) => String(s.default_price_model || "") === "per_box");
-  const employeeSaleSkuIds = new Set(employeeSaleSkus.map((s) => String(s.id)));
-  let employeeTraspasoRules = [];
+  let employeeSaleSkuIds = new Set(
+    skus
+      .filter((s) => String(s.default_price_model || "") === "per_box")
+      .map((s) => String(s.id))
+  );
   const employeeToSkuByFrom = new Map();
+
+  if (!isActorManager && state.actor?.allow_all_sale_sku === false && state.actor?.workspace_id) {
+    const { data, error } = await supabase
+      .from("workspace_sale_sku_rules")
+      .select("sku_id,is_allowed")
+      .eq("workspace_id", state.actor.workspace_id)
+      .eq("is_allowed", true);
+    if (!isActive()) return;
+    if (error) {
+      msg.appendChild(notice("warn", "No se pudieron cargar las reglas de venta SKU. Solo se aplicará la validación del servidor."));
+    } else {
+      const allowedIds = new Set((data || []).map((row) => String(row.sku_id || "")).filter(Boolean));
+      employeeSaleSkuIds = new Set([...employeeSaleSkuIds].filter((id) => allowedIds.has(id)));
+    }
+  }
 
   if (!isActorManager && state.actor?.allow_all_traspaso_sku === false && state.actor?.workspace_id) {
     const { data, error } = await supabase
@@ -1488,8 +1508,7 @@ async function pageCapture(pageCtx) {
     if (error) {
       msg.appendChild(notice("warn", "No se pudieron cargar las reglas de traspaso SKU. Solo se aplicará la validación del servidor."));
     } else {
-      employeeTraspasoRules = data || [];
-      for (const rule of employeeTraspasoRules) {
+      for (const rule of data || []) {
         const fromId = String(rule.from_sku_id || "");
         const toId = String(rule.to_sku_id || "");
         if (!fromId || !toId) continue;
@@ -4634,9 +4653,12 @@ async function pageSettings(pageCtx) {
   const skusWrap = h("div", { class: "col" });
   const employeeAccessWrap = h("div", { class: "col" });
   const employeeAccessMsg = h("div");
+  const saleRulesWrap = h("div", { class: "col" });
+  const saleRulesMsg = h("div");
   const traspasoRulesWrap = h("div", { class: "col" });
   const traspasoRulesMsg = h("div");
   let workspaceUsers = [];
+  let workspaceSaleRules = [];
   let workspaceTraspasoRules = [];
 
   function workspaceId() {
@@ -4691,15 +4713,36 @@ async function pageSettings(pageCtx) {
     return sel;
   }
 
-  function syncWorkspaceUserInputs(roleSel, employeeSel, mermaInput, allowAllChk) {
+  function saleSkuOptionNodes({ includeEmpty = true, emptyLabel = "SKU de venta..." } = {}) {
+    const items = [...state.skus]
+      .filter((s) => String(s.default_price_model || "") === "per_box")
+      .sort((a, b) => Number(a.code || 0) - Number(b.code || 0))
+      .map((s) =>
+        h("option", {
+          value: s.id,
+          text: `${Number.isFinite(Number(s.code)) ? String(s.code) : ""} ${String(s.name || "")}${s.is_active ? "" : " (inactivo)"}`.trim(),
+        })
+      );
+    return includeEmpty ? [h("option", { value: "", text: emptyLabel }), ...items] : items;
+  }
+
+  function makeSaleSkuSelect(emptyLabel = "SKU de venta...", selectedValue = "") {
+    const sel = h("select", {}, saleSkuOptionNodes({ includeEmpty: true, emptyLabel }));
+    sel.value = String(selectedValue || "");
+    return sel;
+  }
+
+  function syncWorkspaceUserInputs(roleSel, employeeSel, mermaInput, allowAllSaleChk, allowAllTraspasoChk) {
     const isEmployeeRole = String(roleSel.value || "employee") === "employee";
     employeeSel.disabled = !isEmployeeRole;
     mermaInput.disabled = !isEmployeeRole;
-    allowAllChk.disabled = !isEmployeeRole;
+    allowAllSaleChk.disabled = !isEmployeeRole;
+    allowAllTraspasoChk.disabled = !isEmployeeRole;
     if (!isEmployeeRole) {
       employeeSel.value = "";
       mermaInput.value = "";
-      allowAllChk.checked = true;
+      allowAllSaleChk.checked = true;
+      allowAllTraspasoChk.checked = true;
     }
   }
 
@@ -4719,6 +4762,10 @@ async function pageSettings(pageCtx) {
       const right = `${skuLabel(b.from_sku_id)} ${skuLabel(b.to_sku_id)}`;
       return left.localeCompare(right);
     });
+  }
+
+  function sortSaleRules(list) {
+    return [...(list || [])].sort((a, b) => skuLabel(a.sku_id).localeCompare(skuLabel(b.sku_id)));
   }
 
   function renderWorkspaceUsers() {
@@ -4755,10 +4802,12 @@ async function pageSettings(pageCtx) {
           value: row.merma_limit_kg != null ? String(Number(row.merma_limit_kg)) : "",
           placeholder: "Sin límite",
         });
-        const allowAllChk = h("input", { type: "checkbox" });
-        allowAllChk.checked = row.allow_all_traspaso_sku !== false;
-        syncWorkspaceUserInputs(roleSel, employeeSel, mermaLimitInput, allowAllChk);
-        roleSel.addEventListener("change", () => syncWorkspaceUserInputs(roleSel, employeeSel, mermaLimitInput, allowAllChk));
+        const allowAllSaleChk = h("input", { type: "checkbox" });
+        allowAllSaleChk.checked = row.allow_all_sale_sku !== false;
+        const allowAllTraspasoChk = h("input", { type: "checkbox" });
+        allowAllTraspasoChk.checked = row.allow_all_traspaso_sku !== false;
+        syncWorkspaceUserInputs(roleSel, employeeSel, mermaLimitInput, allowAllSaleChk, allowAllTraspasoChk);
+        roleSel.addEventListener("change", () => syncWorkspaceUserInputs(roleSel, employeeSel, mermaLimitInput, allowAllSaleChk, allowAllTraspasoChk));
 
         const saveBtn = h(
           "button",
@@ -4789,7 +4838,8 @@ async function pageSettings(pageCtx) {
                 employee_id: nextRole === "employee" ? String(employeeSel.value || "") || null : null,
                 display_name: String(displayNameInput.value || "").trim() || null,
                 merma_limit_kg: nextRole === "employee" ? mermaLimit : null,
-                allow_all_traspaso_sku: nextRole === "employee" ? !!allowAllChk.checked : true,
+                allow_all_sale_sku: nextRole === "employee" ? !!allowAllSaleChk.checked : true,
+                allow_all_traspaso_sku: nextRole === "employee" ? !!allowAllTraspasoChk.checked : true,
               };
 
               const { error } = await supabase
@@ -4849,8 +4899,99 @@ async function pageSettings(pageCtx) {
           h("div", { class: "grid2" }, [field("Nombre visible", displayNameInput), field("Rol", roleSel)]),
           h("div", { class: "grid2" }, [field("Empleado ligado", employeeSel), field("Límite merma (kg)", mermaLimitInput)]),
           h("label", { class: "muted checkrow" }, [
-            allowAllChk,
+            allowAllSaleChk,
+            h("span", { text: "Permitir todas las ventas SKU para este usuario." }),
+          ]),
+          h("label", { class: "muted checkrow" }, [
+            allowAllTraspasoChk,
             h("span", { text: "Permitir todos los traspasos SKU para este usuario." }),
+          ]),
+          h("div", { class: "row-wrap" }, [saveBtn, deleteBtn]),
+        ]);
+      })
+    );
+  }
+
+  function renderSaleRules() {
+    if (!workspaceId()) {
+      saleRulesWrap.replaceChildren(notice("warn", "No se encontró workspace activo para este usuario."));
+      return;
+    }
+
+    const rows = sortSaleRules(workspaceSaleRules);
+    if (rows.length === 0) {
+      saleRulesWrap.replaceChildren(
+        notice("warn", "Todavía no hay reglas de venta SKU. Si un empleado tiene ventas restringidas, no podrá vender hasta que agregues SKUs permitidos.")
+      );
+      return;
+    }
+
+    saleRulesWrap.replaceChildren(
+      ...rows.map((row) => {
+        const noteInput = h("input", {
+          type: "text",
+          value: String(row.note || ""),
+          placeholder: "Nota (opcional)",
+        });
+        const activeChk = h("input", { type: "checkbox" });
+        activeChk.checked = row.is_allowed !== false;
+
+        const saveBtn = h(
+          "button",
+          {
+            class: "btn",
+            type: "button",
+            onclick: async () => {
+              saleRulesMsg.replaceChildren();
+              const { error } = await supabase
+                .from("workspace_sale_sku_rules")
+                .update({
+                  note: String(noteInput.value || "").trim() || null,
+                  is_allowed: !!activeChk.checked,
+                })
+                .eq("id", row.id);
+              if (!isActive()) return;
+              if (error) {
+                saleRulesMsg.appendChild(notice("error", error.message));
+                return;
+              }
+              saleRulesMsg.appendChild(notice("ok", "Regla de venta actualizada."));
+              await loadAccessControlData();
+            },
+          },
+          ["Guardar regla"]
+        );
+
+        const deleteBtn = h(
+          "button",
+          {
+            class: "btn btn-danger",
+            type: "button",
+            onclick: async () => {
+              if (!confirm("Eliminar esta regla de venta SKU?")) return;
+              const { error } = await supabase.from("workspace_sale_sku_rules").delete().eq("id", row.id);
+              if (!isActive()) return;
+              if (error) {
+                saleRulesMsg.appendChild(notice("error", error.message));
+                return;
+              }
+              saleRulesMsg.appendChild(notice("ok", "Regla de venta eliminada."));
+              await loadAccessControlData();
+            },
+          },
+          ["Eliminar regla"]
+        );
+
+        return h("div", { class: "notice col" }, [
+          h("div", { class: "row-wrap" }, [
+            h("div", { style: "font-weight: 760", text: skuLabel(row.sku_id) || "(SKU desconocido)" }),
+            h("div", { class: "spacer" }),
+            h("div", { class: "muted mono", text: String(row.id).slice(0, 8) }),
+          ]),
+          field("Nota", noteInput),
+          h("label", { class: "muted checkrow" }, [
+            activeChk,
+            h("span", { text: "SKU permitido para empleados con ventas restringidas." }),
           ]),
           h("div", { class: "row-wrap" }, [saveBtn, deleteBtn]),
         ]);
@@ -4948,18 +5089,25 @@ async function pageSettings(pageCtx) {
   async function loadAccessControlData() {
     if (!workspaceId()) {
       workspaceUsers = [];
+      workspaceSaleRules = [];
       workspaceTraspasoRules = [];
       renderWorkspaceUsers();
+      renderSaleRules();
       renderTraspasoRules();
       return;
     }
 
     employeeAccessMsg.replaceChildren(notice("warn", "Cargando accesos..."));
+    saleRulesMsg.replaceChildren(notice("warn", "Cargando reglas de venta..."));
     traspasoRulesMsg.replaceChildren(notice("warn", "Cargando reglas..."));
-    const [usersRes, rulesRes] = await Promise.all([
+    const [usersRes, saleRulesRes, rulesRes] = await Promise.all([
       supabase
         .from("workspace_users")
-        .select("workspace_id,user_id,role,employee_id,display_name,merma_limit_kg,allow_all_traspaso_sku,created_at,updated_at")
+        .select("workspace_id,user_id,role,employee_id,display_name,merma_limit_kg,allow_all_sale_sku,allow_all_traspaso_sku,created_at,updated_at")
+        .eq("workspace_id", workspaceId()),
+      supabase
+        .from("workspace_sale_sku_rules")
+        .select("id,workspace_id,sku_id,is_allowed,note,created_at,updated_at")
         .eq("workspace_id", workspaceId()),
       supabase
         .from("workspace_traspaso_sku_rules")
@@ -4974,6 +5122,14 @@ async function pageSettings(pageCtx) {
       workspaceUsers = usersRes.data || [];
       renderWorkspaceUsers();
       employeeAccessMsg.replaceChildren();
+    }
+
+    if (saleRulesRes.error) {
+      saleRulesMsg.replaceChildren(notice("error", saleRulesRes.error.message));
+    } else {
+      workspaceSaleRules = saleRulesRes.data || [];
+      renderSaleRules();
+      saleRulesMsg.replaceChildren();
     }
 
     if (rulesRes.error) {
@@ -5303,10 +5459,12 @@ async function pageSettings(pageCtx) {
     min: "0",
     placeholder: "Sin límite",
   });
+  const accessAllowAllSale = h("input", { type: "checkbox" });
+  accessAllowAllSale.checked = false;
   const accessAllowAllTraspaso = h("input", { type: "checkbox" });
   accessAllowAllTraspaso.checked = false;
-  syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllTraspaso);
-  accessRole.addEventListener("change", () => syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllTraspaso));
+  syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllSale, accessAllowAllTraspaso);
+  accessRole.addEventListener("change", () => syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllSale, accessAllowAllTraspaso));
 
   const addAccessBtn = h(
     "button",
@@ -5346,6 +5504,7 @@ async function pageSettings(pageCtx) {
           employee_id: nextRole === "employee" ? String(accessEmployee.value || "") || null : null,
           display_name: String(accessDisplayName.value || "").trim() || null,
           merma_limit_kg: nextRole === "employee" ? mermaLimit : null,
+          allow_all_sale_sku: nextRole === "employee" ? !!accessAllowAllSale.checked : true,
           allow_all_traspaso_sku: nextRole === "employee" ? !!accessAllowAllTraspaso.checked : true,
         });
         if (!isActive()) return;
@@ -5359,13 +5518,63 @@ async function pageSettings(pageCtx) {
         accessRole.value = "employee";
         accessEmployee.value = "";
         accessMermaLimit.value = "";
+        accessAllowAllSale.checked = false;
         accessAllowAllTraspaso.checked = false;
-        syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllTraspaso);
+        syncWorkspaceUserInputs(accessRole, accessEmployee, accessMermaLimit, accessAllowAllSale, accessAllowAllTraspaso);
         employeeAccessMsg.appendChild(notice("ok", "Acceso agregado."));
         await loadAccessControlData();
       },
     },
     ["Agregar acceso"]
+  );
+
+  const saleRuleSku = makeSaleSkuSelect("SKU de venta...");
+  const saleRuleNote = h("input", { type: "text", placeholder: "Nota (opcional)" });
+  const addSaleRuleBtn = h(
+    "button",
+    {
+      class: "btn",
+      type: "button",
+      onclick: async () => {
+        saleRulesMsg.replaceChildren();
+        if (!workspaceId()) {
+          saleRulesMsg.appendChild(notice("error", "No se encontró workspace activo."));
+          return;
+        }
+
+        const skuId = String(saleRuleSku.value || "");
+        if (!skuId) {
+          saleRulesMsg.appendChild(notice("error", "Elige un SKU."));
+          return;
+        }
+        const sku = skuById(skuId);
+        if (!sku) {
+          saleRulesMsg.appendChild(notice("error", "SKU inválido."));
+          return;
+        }
+        if (String(sku.default_price_model || "") !== "per_box") {
+          saleRulesMsg.appendChild(notice("error", "Solo los SKUs con venta por caja pueden agregarse como venta autorizada para empleados."));
+          return;
+        }
+
+        const { error } = await supabase.from("workspace_sale_sku_rules").insert({
+          workspace_id: workspaceId(),
+          sku_id: skuId,
+          note: String(saleRuleNote.value || "").trim() || null,
+          is_allowed: true,
+        });
+        if (!isActive()) return;
+        if (error) {
+          saleRulesMsg.appendChild(notice("error", error.message));
+          return;
+        }
+        saleRuleSku.value = "";
+        saleRuleNote.value = "";
+        saleRulesMsg.appendChild(notice("ok", "Regla de venta agregada."));
+        await loadAccessControlData();
+      },
+    },
+    ["Agregar regla de venta"]
   );
 
   const ruleFromSku = makeSkuSelect("De SKU...");
@@ -5616,13 +5825,26 @@ async function pageSettings(pageCtx) {
       h("div", { class: "grid2" }, [field("Rol", accessRole), field("Empleado ligado", accessEmployee)]),
       h("div", { class: "grid2" }, [field("Límite merma (kg)", accessMermaLimit), h("div", { class: "col" }, [
         h("label", { class: "muted checkrow" }, [
+          accessAllowAllSale,
+          h("span", { text: "Permitir todas las ventas SKU para este usuario." }),
+        ]),
+        h("label", { class: "muted checkrow" }, [
           accessAllowAllTraspaso,
           h("span", { text: "Permitir todos los traspasos SKU para este usuario." }),
         ]),
       ])]),
-      h("div", { class: "muted", text: "Si desactivas todos los traspasos para un empleado, las reglas de abajo definirán qué traspasos sí puede hacer." }),
+      h("div", { class: "muted", text: "Si desactivas todas las ventas SKU o los traspasos SKU para un empleado, las reglas de abajo definirán qué SKUs sí puede usar." }),
       h("div", { class: "row-wrap" }, [addAccessBtn]),
       employeeAccessWrap,
+    ]),
+    h("div", { class: "card col" }, [
+      h("div", { class: "h1", text: "Reglas de venta SKU" }),
+      h("div", { class: "muted", text: "Estas reglas se aplican a los empleados que tengan desactivada la opción de todas las ventas SKU." }),
+      h("div", { class: "muted", text: "La lista es compartida para todos los empleados restringidos de este workspace." }),
+      saleRulesMsg,
+      h("div", { class: "grid2" }, [field("SKU", saleRuleSku), field("Nota", saleRuleNote)]),
+      h("div", { class: "row-wrap" }, [addSaleRuleBtn]),
+      saleRulesWrap,
     ]),
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: "Reglas de traspaso SKU" }),
@@ -5632,6 +5854,20 @@ async function pageSettings(pageCtx) {
       field("Nota", ruleNote),
       h("div", { class: "row-wrap" }, [addRuleBtn]),
       traspasoRulesWrap,
+    ]),
+    h("div", { class: "card col" }, [
+      h("div", { class: "h1", text: "Checklist de piloto" }),
+      h("div", { class: "muted", text: "Úsalo antes de entregar la app a los empleados." }),
+      h("div", { class: "notice col" }, [
+        h("div", { text: "1. Verifica que cada empleado tenga login en Supabase Auth y un acceso ligado a su empleado." }),
+        h("div", { text: "2. Decide si el empleado tendrá ventas libres por caja o ventas restringidas por SKU." }),
+        h("div", { text: "3. Si tendrá ventas restringidas, agrega los SKUs autorizados en Reglas de venta SKU." }),
+        h("div", { text: "4. Decide si el empleado tendrá traspasos libres o restringidos por par de SKU." }),
+        h("div", { text: "5. Si tendrá traspasos restringidos, agrega las reglas exactas en Reglas de traspaso SKU." }),
+        h("div", { text: "6. Define el límite de merma (kg) para ese usuario." }),
+        h("div", { text: "7. En el teléfono del empleado, abre la app, inicia sesión, concede permiso de cámara y prueba: una venta, una merma y un traspaso." }),
+        h("div", { text: "8. Confirma que la foto se capture desde la cámara, que el movimiento aparezca en Movimientos con tu cuenta de manager y que el inventario se descuente correctamente." }),
+      ]),
     ]),
     h("div", { class: "grid2" }, [
       h("div", { class: "card col" }, [productsWrap]),
