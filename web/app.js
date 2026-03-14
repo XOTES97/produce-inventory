@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.03";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.03";
+import * as cfg from "./config.js?v=2026.03.14.04";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.04";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.03";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.04";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -32,9 +32,12 @@ const MOVEMENTS_PAGE_SIZE = 50;
 const UI_YIELD_EVERY = 60;
 const SUBMIT_PARSE_YIELD_EVERY = 2;
 const RESUME_REFRESH_MS = 15000;
+const RENDER_DEBOUNCE_MS = 120;
+const MASTER_DATA_TTL_MS = 1000 * 60 * 5;
 const MAX_PROOF_DIMENSION = 1280;
 const PROOF_COMPRESS_QUALITY = 0.82;
 const PROOF_COMPRESS_BYTES_THRESHOLD = 1_200_000;
+const PROOF_PICKER_RESET_MS = 45_000;
 const MOVEMENT_LINES_PREVIEW_LIMIT = 12;
 const DEFAULT_PROOF_STAMP_ROWS = 2;
 const CAPTURE_DRAFT_AUTOSAVE_MS = 450;
@@ -85,6 +88,11 @@ const state = {
 
 const IS_MOBILE_DEVICE = typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(String(navigator.userAgent || ""));
 let isProofPickerOpen = false;
+let proofPickerOpenedAt = 0;
+let proofPickerResetTimer = null;
+let masterDataLoadedAt = 0;
+let renderTimer = null;
+let lastRenderCompleteAt = 0;
 
 const lookups = {
   productsById: new Map(),
@@ -110,6 +118,60 @@ const NETWORK_TIMEOUT_MS = 45000;
 function isAppInForeground() {
   const visibility = String(document?.visibilityState || "visible");
   return visibility === "visible" && !document.hidden;
+}
+
+function clearProofPickerOpen({ scheduleRender = false } = {}) {
+  if (!isProofPickerOpen) {
+    proofPickerOpenedAt = 0;
+    return;
+  }
+  isProofPickerOpen = false;
+  proofPickerOpenedAt = 0;
+  if (proofPickerResetTimer != null) {
+    window.clearTimeout(proofPickerResetTimer);
+    proofPickerResetTimer = null;
+  }
+  if (scheduleRender) scheduleSafeRender();
+}
+
+function setProofPickerOpen(active, options = {}) {
+  if (!active) return clearProofPickerOpen({ scheduleRender: options.scheduleRender ?? renderPending });
+
+  isProofPickerOpen = true;
+  proofPickerOpenedAt = Date.now();
+  if (proofPickerResetTimer != null) window.clearTimeout(proofPickerResetTimer);
+  proofPickerResetTimer = window.setTimeout(() => {
+    clearProofPickerOpen({ scheduleRender: renderPending });
+  }, PROOF_PICKER_RESET_MS);
+}
+
+function reconcileProofPickerState() {
+  if (!isProofPickerOpen) return;
+  if (!proofPickerOpenedAt) {
+    proofPickerOpenedAt = Date.now();
+    return;
+  }
+  if (Date.now() - proofPickerOpenedAt > PROOF_PICKER_RESET_MS) {
+    clearProofPickerOpen({ scheduleRender: renderPending });
+  }
+}
+
+let pageContextCounter = 0;
+
+function isPageContextActive(pageCtx) {
+  if (!pageCtx || typeof pageCtx.isActive !== "function") return true;
+  return pageCtx.isActive();
+}
+
+function createPageContext(routeName) {
+  const id = ++pageContextCounter;
+  return {
+    id,
+    routeName,
+    isActive() {
+      return pageContextCounter === id && route() === routeName && !isAppHidden && isAppInForeground();
+    },
+  };
 }
 
 function route() {
@@ -326,7 +388,8 @@ async function prepareProofFiles(rawFiles, { label = "evidencia", onProgress } =
 }
 
 function navTo(r) {
-  isProofPickerOpen = false;
+  if (route() === String(r || "")) return;
+  clearProofPickerOpen();
   location.hash = `#/${r}`;
 }
 
@@ -658,6 +721,7 @@ async function loadMasterData() {
   }));
   rebuildLookups();
   state.masterLoaded = true;
+  masterDataLoadedAt = Date.now();
 }
 
 function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
@@ -1062,7 +1126,7 @@ function buildMovementLinePreviewItems(lines, movementType, currency, maxLines =
   return h("div", { class: "movement-lines-preview col" }, nodes);
 }
 
-async function pageCapture() {
+async function pageCapture(pageCtx) {
   const products = state.products.filter((p) => p.is_active);
   const qualities = state.qualities.filter((q) => q.is_active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const skus = state.skus.filter((s) => s.is_active).sort((a, b) => (a.code || 0) - (b.code || 0));
@@ -1212,23 +1276,26 @@ function setBatchClosePresetState(value) {
 
   const proofs = h("input", { type: "file", accept: "image/*", multiple: "multiple" });
   proofs.addEventListener("pointerdown", () => {
-    isProofPickerOpen = true;
+    setProofPickerOpen(true);
   });
   proofs.addEventListener("touchstart", () => {
-    isProofPickerOpen = true;
+    setProofPickerOpen(true);
+  });
+  proofs.addEventListener("click", () => {
+    setProofPickerOpen(true);
   });
   proofs.addEventListener("focus", () => {
-    isProofPickerOpen = true;
+    setProofPickerOpen(true);
   });
   proofs.addEventListener("blur", () => {
-    isProofPickerOpen = false;
+    setProofPickerOpen(false);
   });
   proofs.addEventListener("change", () => {
-    isProofPickerOpen = false;
+    setProofPickerOpen(false);
     queueDraftSave();
   });
   proofs.addEventListener("cancel", () => {
-    isProofPickerOpen = false;
+    setProofPickerOpen(false);
   });
 
   if (!isActorManager) {
@@ -1499,7 +1566,7 @@ function setBatchClosePresetState(value) {
       onclick: async () => {
         if (isSubmitting) return;
         msg.replaceChildren();
-        isProofPickerOpen = false;
+        clearProofPickerOpen();
         if (draftSaveTimer) {
           window.clearTimeout(draftSaveTimer);
           draftSaveTimer = null;
@@ -1623,6 +1690,9 @@ function setBatchClosePresetState(value) {
           state.captureSubmitting = on;
           submitBtn.disabled = on;
           submitBtn.textContent = on ? "Guardando..." : "Guardar movimiento";
+          if (!on && renderPending) {
+            scheduleSafeRender();
+          }
         };
 
         setSubmitting(true);
@@ -1882,7 +1952,8 @@ function setBatchClosePresetState(value) {
   updateMode(currentMode);
 }
 
-async function pageMovements() {
+async function pageMovements(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const msg = h("div");
   const listWrap = h("div", { class: "col" });
   let movementsOffset = 0;
@@ -1900,7 +1971,7 @@ async function pageMovements() {
   }, ["Actualizar"]);
 
   async function load({ append = false } = {}) {
-    if (isLoadingMovements) return;
+    if (isLoadingMovements || !isActive()) return;
     isLoadingMovements = true;
     loadMoreBtn.disabled = true;
     if (!append) canLoadMoreMovements = false;
@@ -1921,6 +1992,7 @@ async function pageMovements() {
         )
         .order("occurred_at", { ascending: false })
         .range(movementsOffset, movementsOffset + MOVEMENTS_PAGE_SIZE - 1);
+      if (!isActive()) return;
       if (error) {
         msg.replaceChildren(notice("error", error.message));
         return;
@@ -1939,6 +2011,7 @@ async function pageMovements() {
       const movementCards = document.createDocumentFragment();
 
       for (let idx = 0; idx < movementRows.length; idx++) {
+        if (!isActive()) return;
         const m = movementRows[idx];
         const lines = m.movement_lines || [];
         const att = m.movement_attachments || [];
@@ -1977,7 +2050,7 @@ async function pageMovements() {
           {
             class: "btn",
             type: "button",
-            onclick: () => openMovementModal(m),
+            onclick: () => openMovementModal(m, pageCtx),
           },
           ["Ver"]
         );
@@ -1998,6 +2071,7 @@ async function pageMovements() {
         await maybeYield(idx + 1, 10);
       }
 
+      if (!isActive()) return;
       listWrap.appendChild(movementCards);
 
       msg.replaceChildren();
@@ -2010,6 +2084,7 @@ async function pageMovements() {
       }
     } finally {
       isLoadingMovements = false;
+      if (!isActive()) return;
       if (!canLoadMoreMovements) {
         loadMoreBtn.textContent = "Sin más movimientos";
         loadMoreBtn.disabled = true;
@@ -2031,7 +2106,8 @@ async function pageMovements() {
   await load();
 }
 
-async function openMovementModal(m) {
+async function openMovementModal(m, pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
 	  const backdrop = h("div", { class: "modal-backdrop" });
 	  const modal = h("div", { class: "modal col" });
 	  backdrop.appendChild(modal);
@@ -2069,7 +2145,7 @@ async function openMovementModal(m) {
 	              }
 	            }
 	            close();
-	            await render();
+	            scheduleSafeRender();
 	          },
 	        },
 	        ["Eliminar"]
@@ -2159,10 +2235,12 @@ async function openMovementModal(m) {
     for (let i = 0; i < attachments.length; i++) {
       const a = attachments[i];
       const { data } = await supabase.storage.from("movement-proofs").createSignedUrl(a.storage_path, 60 * 30);
+      if (!isActive() || !document.body.contains(backdrop)) return;
       signed.push({ ...a, signedUrl: data?.signedUrl || null });
       await maybeYield(i + 1, 3);
     }
 
+    if (!isActive() || !document.body.contains(backdrop)) return;
     const visibleSigned = signed.filter((a) => a.signedUrl);
     const extraCount = Math.max(0, visibleSigned.length - 6);
     proofsWrap.replaceChildren(
@@ -2196,7 +2274,8 @@ async function openMovementModal(m) {
   document.body.appendChild(backdrop);
 }
 
-async function pageInventory() {
+async function pageInventory(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const msg = h("div");
   let viewMode = "sku"; // "sku" | "product"
   let invMap = new Map(); // key: `${productId}|${qualityId}` -> kg
@@ -2371,8 +2450,10 @@ async function pageInventory() {
   }
 
   async function load() {
+    if (!isActive()) return;
     msg.replaceChildren(notice("warn", "Cargando..."));
     const { data, error } = await supabase.from("inventory_on_hand").select("product_id,product_name,quality_id,quality_name,on_hand_kg");
+    if (!isActive()) return;
     if (error) {
       msg.replaceChildren(notice("error", error.message));
       return;
@@ -2385,13 +2466,15 @@ async function pageInventory() {
       invMap.set(key, Number(row.on_hand_kg || 0));
     }
 
+    if (!isActive()) return;
     renderTable();
   }
 
   await load();
 }
 
-async function pageHypothetical() {
+async function pageHypothetical(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const msg = h("div");
   const summaryWrap = h("div", { class: "col" });
   const tableWrap = h("div", { class: "card col" });
@@ -2582,8 +2665,10 @@ async function pageHypothetical() {
   layout(ROUTE_TITLES.hypothetical, page);
 
   async function load() {
+    if (!isActive()) return;
     msg.replaceChildren(notice("warn", "Cargando..."));
     const { data, error } = await supabase.from("inventory_on_hand").select("product_id,quality_id,on_hand_kg");
+    if (!isActive()) return;
     if (error) {
       msg.replaceChildren(notice("error", error.message));
       return;
@@ -2597,6 +2682,7 @@ async function pageHypothetical() {
     }
 
     rows = getBuckets();
+    if (!isActive()) return;
     updateSummary();
     renderTable();
   }
@@ -2604,7 +2690,8 @@ async function pageHypothetical() {
   await load();
 }
 
-async function pageReports() {
+async function pageReports(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const msg = h("div");
   const start = h("input", { type: "date" });
   const end = h("input", { type: "date" });
@@ -2625,6 +2712,7 @@ async function pageReports() {
       class: "btn btn-primary",
       type: "button",
       onclick: async () => {
+        if (!isActive()) return;
         msg.replaceChildren();
         out.replaceChildren();
         const s = String(start.value || "");
@@ -2646,6 +2734,7 @@ async function pageReports() {
           .gte("occurred_at", startIso)
           .lte("occurred_at", endIso)
           .order("occurred_at", { ascending: true });
+        if (!isActive()) return;
         msg.replaceChildren();
         if (error) {
           msg.appendChild(notice("error", error.message));
@@ -2678,6 +2767,7 @@ async function pageReports() {
 
         let reportMovementIndex = 0;
         for (const m of data || []) {
+          if (!isActive()) return;
           reportMovementIndex += 1;
           const lines = m.movement_lines || [];
           for (const l of lines) {
@@ -2840,6 +2930,7 @@ async function pageReports() {
           ),
         ]);
 
+        if (!isActive()) return;
         out.replaceChildren(
           summary,
           h("div", { class: "card col" }, [
@@ -2872,7 +2963,8 @@ async function pageReports() {
   layout(ROUTE_TITLES.reports, page);
 }
 
-async function pageCutoffs() {
+async function pageCutoffs(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const createMsg = h("div");
   const listMsg = h("div");
   const detailsMsg = h("div");
@@ -2964,6 +3056,27 @@ async function pageCutoffs() {
   const lineWeight = h("input", { type: "number", step: "0.001", min: "0.001", placeholder: "0.000" });
   const lineNotes = h("textarea", { placeholder: "Notas del pesaje (opcional)." });
   const lineProofs = h("input", { type: "file", accept: "image/*", multiple: true });
+  lineProofs.addEventListener("pointerdown", () => {
+    setProofPickerOpen(true);
+  });
+  lineProofs.addEventListener("touchstart", () => {
+    setProofPickerOpen(true);
+  });
+  lineProofs.addEventListener("click", () => {
+    setProofPickerOpen(true);
+  });
+  lineProofs.addEventListener("focus", () => {
+    setProofPickerOpen(true);
+  });
+  lineProofs.addEventListener("blur", () => {
+    setProofPickerOpen(false);
+  });
+  lineProofs.addEventListener("change", () => {
+    setProofPickerOpen(false);
+  });
+  lineProofs.addEventListener("cancel", () => {
+    setProofPickerOpen(false);
+  });
 
   const reportCutoffSel = h("select");
   const reportIncludeAdjustments = h("select");
@@ -3005,12 +3118,14 @@ async function pageCutoffs() {
   });
 
   async function loadCutoffs() {
+    if (!isActive()) return;
     listMsg.replaceChildren(notice("warn", "Cargando cortes..."));
     const { data, error } = await supabase
       .from("physical_cutoffs")
       .select("id,started_at,ended_at,notes,created_at")
       .order("started_at", { ascending: false })
       .limit(100);
+    if (!isActive()) return;
     if (error) {
       listMsg.replaceChildren(notice("error", error.message));
       return;
@@ -3033,6 +3148,7 @@ async function pageCutoffs() {
 
     renderCutoffList();
     await loadCutoffDetails();
+    if (!isActive()) return;
     listMsg.replaceChildren();
   }
 
@@ -3086,6 +3202,7 @@ async function pageCutoffs() {
   }
 
   async function loadCutoffDetails() {
+    if (!isActive()) return;
     detailsMsg.replaceChildren();
     lineListWrap.replaceChildren();
 
@@ -3109,6 +3226,7 @@ async function pageCutoffs() {
     lineListWrap.replaceChildren(notice("warn", "Cargando pesajes..."));
     try {
       const lines = await loadCutoffLines(cutoffId);
+      if (!isActive()) return;
       const totalKg = lines.reduce((acc, l) => acc + Number(l.weight_kg || 0), 0);
 
       if (lines.length === 0) {
@@ -3149,6 +3267,7 @@ async function pageCutoffs() {
                         const { data } = await supabase.storage
                           .from("physical-cutoff-proofs")
                           .createSignedUrl(first.storage_path, 60 * 30);
+                        if (!isActive()) return;
                         if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener,noreferrer");
                       },
                     },
@@ -3214,6 +3333,7 @@ async function pageCutoffs() {
       class: "btn btn-primary",
       type: "button",
       onclick: async () => {
+        if (!isActive()) return;
         createMsg.replaceChildren();
         const startedIso = isoFromLocalInput(String(createStarted.value || ""));
         const endedIso = createEnded.value ? isoFromLocalInput(String(createEnded.value || "")) : null;
@@ -3261,6 +3381,7 @@ async function pageCutoffs() {
       class: "btn",
       type: "button",
       onclick: async () => {
+        if (!isActive()) return;
         detailsMsg.replaceChildren();
         const cutoffId = String(detailCutoffSel.value || "");
         if (!cutoffId) {
@@ -3307,6 +3428,7 @@ async function pageCutoffs() {
       class: "btn btn-danger",
       type: "button",
       onclick: async () => {
+        if (!isActive()) return;
         detailsMsg.replaceChildren();
         const cutoffId = String(detailCutoffSel.value || "");
         if (!cutoffId) {
@@ -3357,6 +3479,7 @@ async function pageCutoffs() {
       class: "btn btn-primary",
       type: "button",
       onclick: async () => {
+        if (!isActive()) return;
         detailsMsg.replaceChildren();
         const cutoffId = String(detailCutoffSel.value || selectedCutoffId || "");
         if (!cutoffId) {
@@ -3405,6 +3528,7 @@ async function pageCutoffs() {
               detailsMsg.replaceChildren(notice("warn", `${label} ${idx}/${total}`));
             },
           });
+          if (!isActive()) return;
 
           for (let i = 0; i < preparedFiles.length; i++) {
             const p = preparedFiles[i];
@@ -3431,12 +3555,14 @@ async function pageCutoffs() {
               size_bytes: Number.isFinite(p.upload_size) ? p.upload_size : null,
             });
             await maybeYield(i + 1, 1);
+            if (!isActive()) return;
           }
 
           if (uploaded.length > 0) {
             const { error: attErr } = await supabase.from("physical_cutoff_attachments").insert(uploaded);
             if (attErr) throw attErr;
           }
+          if (!isActive()) return;
 
           lineWeight.value = "";
           lineNotes.value = "";
@@ -3534,6 +3660,7 @@ async function pageCutoffs() {
   );
 
   async function generateReport() {
+    if (!isActive()) return;
     reportMsg.replaceChildren();
     reportOut.replaceChildren();
     latestKardexRows = [];
@@ -3571,6 +3698,7 @@ async function pageCutoffs() {
       .select("id,sku_id,measured_at,weight_kg,notes")
       .eq("cutoff_id", cutoffId)
       .order("measured_at", { ascending: true });
+    if (!isActive()) return;
     if (physicalErr) {
       reportMsg.replaceChildren(notice("error", physicalErr.message));
       return;
@@ -3581,6 +3709,7 @@ async function pageCutoffs() {
       .select("id,movement_type,occurred_at,movement_lines(product_id,quality_id,delta_weight_kg)")
       .lte("occurred_at", cutoffEndIso)
       .order("occurred_at", { ascending: true });
+    if (!isActive()) return;
     if (allMovesErr) {
       reportMsg.replaceChildren(notice("error", allMovesErr.message));
       return;
@@ -3596,6 +3725,7 @@ async function pageCutoffs() {
     if (periodStartIso) periodQuery = periodQuery.gt("occurred_at", periodStartIso);
     periodQuery = periodQuery.lte("occurred_at", cutoffEndIso);
     const { data: periodMoves, error: periodErr } = await periodQuery;
+    if (!isActive()) return;
     if (periodErr) {
       reportMsg.replaceChildren(notice("error", periodErr.message));
       return;
@@ -3604,6 +3734,7 @@ async function pageCutoffs() {
     const physicalByBucket = new Map();
     let physicalIndex = 0;
     for (const ln of physicalLines || []) {
+      if (!isActive()) return;
       await maybeYield(++physicalIndex, 25);
       const sku = skuById(ln.sku_id);
       if (!sku) continue;
@@ -3615,6 +3746,7 @@ async function pageCutoffs() {
     let allMoveIndex = 0;
     for (const m of allMoves || []) {
       if (!includeAdjustments && String(m.movement_type || "") === "ajuste") continue;
+      if (!isActive()) return;
       await maybeYield(++allMoveIndex, 20);
       for (const l of m.movement_lines || []) {
         const key = bucketKey(l.product_id, l.quality_id);
@@ -3636,6 +3768,7 @@ async function pageCutoffs() {
     const rows = [];
     let rowBuildIndex = 0;
     for (const key of keys) {
+      if (!isActive()) return;
       const skList = (bucketSkus.get(key) || []).slice().sort((a, b) => Number(a.code || 0) - Number(b.code || 0));
       const primary = choosePrimarySku(skList);
       const codes = skList.length ? skList.map((s) => String(s.code)).join("/") : "";
@@ -3712,6 +3845,7 @@ async function pageCutoffs() {
     let kardexMovementIndex = 0;
     const periodRowsForReport = (periodMoves || []).filter((m) => includeAdjustments || String(m.movement_type || "") !== "ajuste");
     for (const m of periodRowsForReport) {
+      if (!isActive()) return;
       const lines = m.movement_lines || [];
       for (const l of lines) {
         kardexRows.push({
@@ -3784,6 +3918,7 @@ async function pageCutoffs() {
           ])
         : h("div", { class: "notice" }, [h("div", { class: "muted", text: "Sin movimientos en el periodo entre cortes." })]);
 
+    if (!isActive()) return;
     reportOut.replaceChildren(
       h("div", { class: "card col" }, [
         h("div", { class: "h1", text: "Resumen de corte" }),
@@ -3816,6 +3951,7 @@ async function pageCutoffs() {
       ])
     );
 
+    if (!isActive()) return;
     reportMsg.replaceChildren(notice("ok", "Reporte generado."));
   }
 
@@ -3999,7 +4135,8 @@ async function pageCutoffs() {
   await loadCutoffs();
 }
 
-async function pageSettings() {
+async function pageSettings(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
   const msg = h("div");
 
   const productsWrap = h("div", { class: "col" });
@@ -4010,7 +4147,8 @@ async function pageSettings() {
   async function refreshMaster() {
     state.masterLoaded = false;
     await loadMasterData();
-    render();
+    if (!isActive()) return;
+    scheduleSafeRender();
   }
 
   function renderMaster() {
@@ -4518,18 +4656,20 @@ async function pageSettings() {
 }
 
 async function render() {
-  const r = route();
+  let r = route();
   await ensureActorContextLoaded();
+  r = route();
 
   if (!state.session) {
     if (r !== "login") navTo("login");
-    await pageLogin();
+    await pageLogin(createPageContext("login"));
     return;
   }
 
   if (!state.masterLoaded) {
     try {
       await loadMasterData();
+      r = route();
     } catch (e) {
       layout("Error", notice("error", e?.message ? String(e.message) : "No se pudo cargar catalogos."));
       return;
@@ -4543,17 +4683,19 @@ async function render() {
 
   if (!currentRouteAllowed(r)) {
     navTo("capture");
-    await pageCapture();
+    await pageCapture(createPageContext("capture"));
     return;
   }
 
-  if (r === "capture") return pageCapture();
-  if (r === "movements") return pageMovements();
-  if (r === "inventory") return pageInventory();
-  if (r === "hypothetical") return pageHypothetical();
-  if (r === "cutoffs") return pageCutoffs();
-  if (r === "reports") return pageReports();
-  if (r === "settings") return pageSettings();
+  const pageCtx = createPageContext(r);
+
+  if (r === "capture") return pageCapture(pageCtx);
+  if (r === "movements") return pageMovements(pageCtx);
+  if (r === "inventory") return pageInventory(pageCtx);
+  if (r === "hypothetical") return pageHypothetical(pageCtx);
+  if (r === "cutoffs") return pageCutoffs(pageCtx);
+  if (r === "reports") return pageReports(pageCtx);
+  if (r === "settings") return pageSettings(pageCtx);
 
   navTo("capture");
 }
@@ -4563,21 +4705,42 @@ let renderPending = false;
 let appVisibilityResumeScheduled = false;
 let isAppHidden = false;
 
+function isRenderThrottled() {
+  return isAppHidden || !isAppInForeground() || isProofPickerOpen || state.captureSubmitting;
+}
+
+function scheduleSafeRender() {
+  renderPending = true;
+  if (isRenderThrottled()) return;
+  if (renderRunning) return;
+  if (renderTimer != null) return;
+
+  const sinceLastRender = Date.now() - lastRenderCompleteAt;
+  const delay = sinceLastRender < RENDER_DEBOUNCE_MS ? RENDER_DEBOUNCE_MS - sinceLastRender : 0;
+
+  renderTimer = window.setTimeout(() => {
+    renderTimer = null;
+    void safeRender();
+  }, delay);
+}
+
+function clearRenderTimer() {
+  if (renderTimer == null) return;
+  window.clearTimeout(renderTimer);
+  renderTimer = null;
+}
+
 async function safeRender() {
-  if (!isAppInForeground() || isAppHidden) {
+  if (isRenderThrottled()) {
     renderPending = true;
     return;
   }
-  if (isProofPickerOpen) {
-    renderPending = true;
-    return;
-  }
-  if (state.captureSubmitting) return;
   if (renderRunning) {
     renderPending = true;
     return;
   }
   renderRunning = true;
+  renderPending = false;
   try {
     do {
       renderPending = false;
@@ -4586,6 +4749,7 @@ async function safeRender() {
   } catch (e) {
     layout("Error", notice("error", e?.message ? String(e.message) : "La app tuvo un error inesperado."));
   } finally {
+    lastRenderCompleteAt = Date.now();
     renderRunning = false;
   }
 }
@@ -4600,7 +4764,9 @@ async function refreshAfterResume() {
   if (route() === "capture") return;
   try {
     await withTimeout(loadSession(), NETWORK_TIMEOUT_MS, "Reconectando...");
-    state.masterLoaded = false;
+    if (!state.masterLoaded || now - masterDataLoadedAt >= MASTER_DATA_TTL_MS) {
+      state.masterLoaded = false;
+    }
   } catch {
     // ignore; safeRender will show auth error if needed
   }
@@ -4632,7 +4798,7 @@ async function boot() {
       state.actorLoaded = true;
     }
     if (!session) navTo("login");
-    await safeRender();
+    scheduleSafeRender();
   });
 
   const scheduleResumeRefresh = () => {
@@ -4645,40 +4811,47 @@ async function boot() {
   };
 
   const recoverMobileUiState = () => {
-    isProofPickerOpen = false;
+    clearProofPickerOpen();
     cleanupStuckBackdrops();
   };
 
-  window.addEventListener("hashchange", () => safeRender());
-  window.addEventListener("online", () => safeRender());
+  window.addEventListener("hashchange", () => scheduleSafeRender());
+  window.addEventListener("online", () => scheduleSafeRender());
   window.addEventListener("focus", () => {
     recoverMobileUiState();
     if (isAppInForeground()) {
       isAppHidden = false;
       scheduleResumeRefresh();
     }
+    scheduleSafeRender();
   });
   window.addEventListener("blur", () => {
-    isProofPickerOpen = false;
+    clearProofPickerOpen();
+    clearRenderTimer();
   });
   window.addEventListener("pagehide", () => {
     isAppHidden = true;
-    isProofPickerOpen = false;
+    clearProofPickerOpen();
+    clearRenderTimer();
   });
   window.addEventListener("pageshow", () => {
     recoverMobileUiState();
     isAppHidden = false;
     scheduleResumeRefresh();
+    scheduleSafeRender();
   });
   document.addEventListener("visibilitychange", () => {
     const hidden = !isAppInForeground();
     isAppHidden = hidden;
     if (hidden) {
-      isProofPickerOpen = false;
+      clearProofPickerOpen();
+      clearRenderTimer();
+      return;
     }
     if (!hidden && route() !== "capture") {
       scheduleResumeRefresh();
     }
+    scheduleSafeRender();
   });
 
   if ("serviceWorker" in navigator) {
