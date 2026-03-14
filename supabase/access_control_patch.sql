@@ -171,6 +171,25 @@ as $$
   );
 $$;
 
+create or replace function public.employee_is_valid_for_actor(target_employee_id uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select exists (
+    select 1
+    from public.employees e
+    join public.workspace_users wu_owner
+      on wu_owner.user_id = e.owner_id
+    join public.workspace_users wu_actor
+      on wu_actor.workspace_id = wu_owner.workspace_id
+    where wu_actor.user_id = auth.uid()
+      and e.id = target_employee_id
+      and coalesce(e.is_active, true)
+  );
+$$;
+
 create or replace function public.actor_can_traspaso_sku(from_sku_id uuid, to_sku_id uuid)
 returns boolean
 language sql
@@ -959,11 +978,15 @@ begin
         where s.id is null
           or not public.actor_can_access_owner(s.owner_id)
           or not public.actor_can_sell_sku(s.id)
-          or s.default_price_model is distinct from 'per_box'::public.price_model
           or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
           or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
-          or coalesce(nullif(l->>'price_model', '')::public.price_model, 'per_kg'::public.price_model) <> 'per_box'::public.price_model
-          or coalesce(nullif(l->>'boxes', '')::integer, 0) <= 0
+          or case
+            when s.default_price_model = 'per_box'::public.price_model then
+              coalesce(nullif(l->>'price_model', '')::public.price_model, 'per_box'::public.price_model) <> 'per_box'::public.price_model
+              or coalesce(nullif(l->>'boxes', '')::integer, 0) <= 0
+            else
+              coalesce(nullif(l->>'price_model', '')::public.price_model, 'per_kg'::public.price_model) <> 'per_kg'::public.price_model
+          end
       ) then
         raise exception 'employee_sale_only_per_box_skus';
       end if;
@@ -1008,11 +1031,7 @@ begin
     end if;
   end if;
 
-  if v_employee_id is not null and not exists (
-    select 1 from public.employees e
-    where e.id = v_employee_id
-      and public.actor_can_access_owner(e.owner_id)
-  ) then
+  if v_employee_id is not null and not public.employee_is_valid_for_actor(v_employee_id) then
     raise exception 'employee_invalid';
   end if;
 

@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.11";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.11";
+import * as cfg from "./config.js?v=2026.03.14.12";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.12";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.11";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.12";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -245,11 +245,11 @@ function normalizeActorRoleError(message) {
     case "employee_merma_requires_sku":
       return "La merma de empleado requiere elegir un SKU por línea.";
     case "employee_sale_only_per_box_skus":
-      return "Los empleados solo pueden capturar ventas por caja en SKUs autorizados.";
+      return "Los empleados solo pueden capturar ventas en SKUs autorizados y con el formato permitido por ese SKU.";
     case "merma_limit_exceeded":
       return "La merma excede el límite permitido para este usuario.";
     case "employee_invalid":
-      return "Empleado inválido o inactivo.";
+      return "Empleado inválido, inaccesible o inactivo.";
     case "only_manager_can_delete_movement":
       return "Solo el gerente puede eliminar movimientos.";
     case "not_authorized":
@@ -1313,6 +1313,10 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
 
   skuSel.addEventListener("change", () => {
     syncSkuDerivedFields();
+    if (currentMode === "venta") {
+      setVisibilityForMode(currentMode);
+      return;
+    }
     recalc();
   });
 
@@ -1438,17 +1442,20 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       total.textContent = "";
       priceModel.disabled = false;
       priceModelField.style.display = "";
+      boxesField.style.display = "";
     } else {
       const s = findSku(skuSel.value);
-      const employeePerBoxOnly = employeeCapture;
-      if (employeePerBoxOnly) {
-        priceModel.value = "per_box";
+      const employeeSaleModel = String(s?.default_price_model || "") === "per_box" ? "per_box" : "per_kg";
+      if (employeeCapture) {
+        priceModel.value = employeeSaleModel;
         priceModel.disabled = true;
         priceModelField.style.display = "none";
+        boxesField.style.display = employeeSaleModel === "per_box" ? "" : "none";
         boxesField.querySelector("label")?.replaceChildren(document.createTextNode("Cajas"));
       } else {
         priceModel.disabled = false;
         priceModelField.style.display = "";
+        boxesField.style.display = "";
         boxesField.querySelector("label")?.replaceChildren(document.createTextNode("Cajas (opcional)"));
       }
       if (s && s.default_price_model && !priceModel.value) {
@@ -1542,11 +1549,14 @@ async function pageCapture(pageCtx) {
   const autoEmpId = actorEmployeeId();
   const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
   let employeeSaleSkuIds = new Set(
-    skus
-      .filter((s) => String(s.default_price_model || "") === "per_box")
-      .map((s) => String(s.id))
+    skus.map((s) => String(s.id))
   );
   const employeeToSkuByFrom = new Map();
+
+  function employeeSalePriceModelForSkuId(skuId) {
+    const sku = skus.find((s) => String(s.id) === String(skuId || ""));
+    return String(sku?.default_price_model || "") === "per_box" ? "per_box" : "per_kg";
+  }
 
   if (!isActorManager && state.actor?.allow_all_sale_sku === false && state.actor?.workspace_id) {
     const { data, error } = await supabase
@@ -2202,7 +2212,7 @@ function setBatchClosePresetState(value) {
           if (currentMode !== "traspaso_calidad") row.quality_id = quality_id || null;
 
           if (currentMode === "venta") {
-            const pm = !isActorManager ? "per_box" : ln.price_model;
+            const pm = !isActorManager ? employeeSalePriceModelForSkuId(sku_id) : ln.price_model;
             const up = Number(ln.unit_price);
             const b = ln.boxes ? Number(ln.boxes) : null;
             if (!isActorManager && !employeeSaleSkuIds.has(sku_id)) {
@@ -4780,7 +4790,7 @@ async function pageSettings(pageCtx) {
 
   function saleSkuOptionNodes({ includeEmpty = true, emptyLabel = "SKU de venta..." } = {}) {
     const items = [...state.skus]
-      .filter((s) => String(s.default_price_model || "") === "per_box")
+      .filter((s) => !!s.is_active)
       .sort((a, b) => Number(a.code || 0) - Number(b.code || 0))
       .map((s) =>
         h("option", {
@@ -5617,10 +5627,6 @@ async function pageSettings(pageCtx) {
           saleRulesMsg.appendChild(notice("error", "SKU inválido."));
           return;
         }
-        if (String(sku.default_price_model || "") !== "per_box") {
-          saleRulesMsg.appendChild(notice("error", "Solo los SKUs con venta por caja pueden agregarse como venta autorizada para empleados."));
-          return;
-        }
 
         const { error } = await supabase.from("workspace_sale_sku_rules").insert({
           workspace_id: workspaceId(),
@@ -5923,7 +5929,7 @@ async function pageSettings(pageCtx) {
       h("div", { class: "muted", text: "Úsalo antes de entregar la app a los empleados." }),
       h("div", { class: "notice col" }, [
         h("div", { text: "1. Verifica que cada empleado tenga login en Supabase Auth y un acceso ligado a su empleado." }),
-        h("div", { text: "2. Decide si el empleado tendrá ventas libres por caja o ventas restringidas por SKU." }),
+        h("div", { text: "2. Decide si el empleado tendrá ventas libres o ventas restringidas por SKU." }),
         h("div", { text: "3. Si tendrá ventas restringidas, agrega los SKUs autorizados en Reglas de venta SKU." }),
         h("div", { text: "4. Decide si el empleado tendrá traspasos libres o restringidos por par de SKU." }),
         h("div", { text: "5. Si tendrá traspasos restringidos, agrega las reglas exactas en Reglas de traspaso SKU." }),
