@@ -1562,6 +1562,7 @@ function buildMovementLinePreviewItems(lines, movementType, currency, maxLines =
 
 async function pageCapture(pageCtx) {
   const isActive = () => isPageContextActive(pageCtx);
+  const OCCURRED_AT_AUTO_SYNC_MS = 15000;
   const products = state.products.filter((p) => p.is_active);
   const qualities = state.qualities.filter((q) => q.is_active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const skus = state.skus.filter((s) => s.is_active).sort((a, b) => (a.code || 0) - (b.code || 0));
@@ -1662,6 +1663,7 @@ async function pageCapture(pageCtx) {
     type: "datetime-local",
     value: isActorManager && fixedDtLockOn && fixedDtSaved ? fixedDtSaved : localNowInputValue(),
   });
+  let occurredAtDirtyWhileUnlocked = false;
   const lockOccurredAt = h("input", { type: "checkbox" });
   lockOccurredAt.checked = isActorManager && fixedDtLockOn;
   const fixedDatetimeWarning = h("div");
@@ -1706,7 +1708,10 @@ function setBatchClosePresetState(value) {
   }
 
   function setOccurredAtToNow({ persistIfLocked = true } = {}) {
-    occurredAt.value = localNowInputValue();
+    const nextValue = localNowInputValue();
+    const changed = String(occurredAt.value || "") !== nextValue;
+    occurredAt.value = nextValue;
+    occurredAtDirtyWhileUnlocked = false;
     if (isActorManager && lockOccurredAt.checked && persistIfLocked) {
       storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
     }
@@ -1716,7 +1721,22 @@ function setBatchClosePresetState(value) {
       setAggregateCloseTime(suggested, false);
     }
     updateFixedDatetimeWarning();
-    queueDraftSave();
+    if (changed) queueDraftSave();
+  }
+
+  function shouldAutoSyncOccurredAt() {
+    if (!isActive() || !isAppInForeground()) return false;
+    if (isActorManager && lockOccurredAt.checked) return false;
+    if (occurredAtDirtyWhileUnlocked) return false;
+    if (document.activeElement === occurredAt) return false;
+    return true;
+  }
+
+  function syncOccurredAtIfNeeded({ force = false } = {}) {
+    if (!force && !shouldAutoSyncOccurredAt()) return;
+    const nextValue = localNowInputValue();
+    if (!force && String(occurredAt.value || "") === nextValue) return;
+    setOccurredAtToNow({ persistIfLocked: true });
   }
 
   useNowBtn.addEventListener("click", () => {
@@ -1925,7 +1945,10 @@ function setBatchClosePresetState(value) {
       const draftLines = lineRows.length > MAX_DRAFT_LINES ? lineRows.slice(0, MAX_DRAFT_LINES) : lineRows;
       const payload = {
         movementType: currentMode,
-        occurredAt: normalizeDraftValue(occurredAt.value, localNowInputValue()),
+        occurredAt:
+          isActorManager && !!lockOccurredAt.checked
+            ? normalizeDraftValue(occurredAt.value, localNowInputValue())
+            : null,
         lockOccurredAt: !!lockOccurredAt.checked,
         aggregateMode: !!aggregateMode.checked,
         aggregateCloseTime: normalizeDraftValue(aggregateCloseTime.value),
@@ -1958,10 +1981,12 @@ function setBatchClosePresetState(value) {
     }
     draftRestoreInProgress = true;
     try {
-      if (isActorManager && draft.occurredAt) {
+      if (isActorManager && draft.lockOccurredAt && draft.occurredAt) {
         occurredAt.value = String(draft.occurredAt);
+        occurredAtDirtyWhileUnlocked = false;
       } else {
         occurredAt.value = localNowInputValue();
+        occurredAtDirtyWhileUnlocked = false;
       }
       lockOccurredAt.checked = isActorManager && !!draft.lockOccurredAt;
       aggregateMode.checked = isActorManager && !!draft.aggregateMode;
@@ -2134,8 +2159,15 @@ function setBatchClosePresetState(value) {
     updateTraspasoSkuMeta();
     queueDraftSave();
   });
+  occurredAt.addEventListener("input", (event) => {
+    if ((isActorManager && lockOccurredAt.checked) || !event?.isTrusted) return;
+    occurredAtDirtyWhileUnlocked = true;
+  });
   let aggregateCloseTimeEdited = false;
   occurredAt.addEventListener("change", () => {
+    if (!isActorManager || !lockOccurredAt.checked) {
+      occurredAtDirtyWhileUnlocked = true;
+    }
     if (isActorManager && lockOccurredAt.checked) storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
     if (isActorManager && aggregateMode.checked && !aggregateCloseTimeEdited) {
       const suggested = batchCloseDefaultTime(occurredAt.value);
@@ -2157,10 +2189,21 @@ function setBatchClosePresetState(value) {
     if (lockOccurredAt.checked) {
       if (!occurredAt.value) occurredAt.value = localNowInputValue();
       storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    } else {
+      occurredAtDirtyWhileUnlocked = false;
+      syncOccurredAtIfNeeded({ force: true });
     }
     updateFixedDatetimeWarning();
     queueDraftSave();
   });
+  const occurredAtAutoSyncTimer = window.setInterval(() => {
+    if (!isActive()) {
+      window.clearInterval(occurredAtAutoSyncTimer);
+      return;
+    }
+    syncOccurredAtIfNeeded();
+  }, OCCURRED_AT_AUTO_SYNC_MS);
+  syncOccurredAtIfNeeded({ force: true });
   setBatchClosePresetState(aggregateCloseTime.value);
   updateFixedDatetimeWarning();
   aggregateCloseTime.disabled = !isActorManager || !aggregateMode.checked;
@@ -2192,6 +2235,7 @@ function setBatchClosePresetState(value) {
     if (proofs) proofs.value = "";
     clearEmployeeCaptureProofs();
     renderEmployeeProofs();
+    occurredAtDirtyWhileUnlocked = false;
     if (isActorManager && lockOccurredAt.checked) {
       storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
     } else {
