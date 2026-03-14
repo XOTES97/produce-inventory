@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.15";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.15";
+import * as cfg from "./config.js?v=2026.03.14.16";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.16";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.15";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.16";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -2652,6 +2652,17 @@ async function pageMovements(pageCtx) {
     },
   }, ["Actualizar"]);
 
+  const openMovementDetails = async (movement) => {
+    try {
+      await openMovementModal(movement, pageCtx);
+    } catch (error) {
+      if (!isActive()) return;
+      msg.replaceChildren(
+        notice("error", error?.message ? String(error.message) : "No se pudo abrir el movimiento.")
+      );
+    }
+  };
+
   async function load({ append = false } = {}) {
     if (isLoadingMovements || !isActive()) return;
     isLoadingMovements = true;
@@ -2730,18 +2741,35 @@ async function pageMovements(pageCtx) {
         const btnView = h(
           "button",
           {
-            class: "btn",
+            class: "btn btn-primary",
             type: "button",
-            onclick: () => openMovementModal(m, pageCtx),
+            onclick: (event) => {
+              event?.preventDefault?.();
+              event?.stopPropagation?.();
+              void openMovementDetails(m);
+            },
           },
           ["Ver"]
         );
 
-        const card = h("div", { class: "card col" }, [
+        const card = h("div", {
+          class: "card col movement-card",
+          role: "button",
+          tabindex: "0",
+          onclick: () => {
+            void openMovementDetails(m);
+          },
+          onkeydown: (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            void openMovementDetails(m);
+          },
+        }, [
           h("div", { class: "row" }, [
             h("div", { class: "col", style: "gap: 4px" }, [
               h("div", { style: "font-weight: 760", text: title }),
               h("div", { class: "muted", text: subtitle }),
+              h("div", { class: "muted mono", text: `ID ${String(m.id).slice(0, 8)}...` }),
             ]),
             h("div", { class: "spacer" }),
             btnView,

@@ -260,6 +260,7 @@ textarea { min-height: 84px; resize: vertical; }
   border-radius: 12px;
   cursor: pointer;
   user-select: none;
+  touch-action: manipulation;
   transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease;
   box-shadow: 0 1px 0 rgba(23, 32, 47, 0.05);
 }
@@ -470,6 +471,11 @@ textarea { min-height: 84px; resize: vertical; }
   padding: 8px 10px;
   background: rgba(255,255,255,0.58);
   gap: 0;
+}
+
+.movement-card {
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
 .movement-line-item {
