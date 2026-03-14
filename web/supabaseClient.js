@@ -1,4 +1,4 @@
-import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./config.js?v=2026.03.14.03";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./config.js?v=2026.03.14.05";
 
 // Using ESM build from jsdelivr to avoid a build step (Node not required).
 // When you later move to a bundled app, replace this with a normal npm dependency.
@@ -14,10 +14,15 @@ if (!url || !anonKey) {
   );
 }
 
+// This app does not use OAuth redirect flows, and mobile browsers have shown
+// Web Locks contention during auth resume. A no-op auth lock avoids that stall.
+const noOpLock = async (_name, _acquireTimeout, fn) => await fn();
+
 export const supabase = createClient(url, anonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: true,
+    detectSessionInUrl: false,
+    lock: noOpLock,
   },
 });

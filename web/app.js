@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.04";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.04";
+import * as cfg from "./config.js?v=2026.03.14.05";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.05";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.04";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.05";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -237,6 +237,28 @@ function normalizeActorRoleError(message) {
     default:
       return code;
   }
+}
+
+function defaultActorState() {
+  return {
+    workspace_id: null,
+    role: "manager",
+    employee_id: null,
+    merma_limit_kg: null,
+    allow_all_traspaso_sku: true,
+    display_name: null,
+  };
+}
+
+function resetActorState() {
+  state.actor = defaultActorState();
+  state.actorLoaded = true;
+}
+
+function isSupabaseLockAbortError(error) {
+  const message = String(error?.message || error || "");
+  const name = String(error?.name || "");
+  return name === "AbortError" || message.includes("Lock broken by another request with the 'steal' option");
 }
 
 async function ensureActorContextLoaded() {
@@ -631,22 +653,22 @@ function skuLabel(id) {
 }
 
 async function loadSession() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  state.session = data.session;
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    state.session = data.session;
+    return data.session;
+  } catch (error) {
+    if (isSupabaseLockAbortError(error)) {
+      return state.session;
+    }
+    throw error;
+  }
 }
 
 async function loadActorContext() {
   if (!state.session) {
-    state.actor = {
-      workspace_id: null,
-      role: "manager",
-      employee_id: null,
-      merma_limit_kg: null,
-      allow_all_traspaso_sku: true,
-      display_name: null,
-    };
-    state.actorLoaded = true;
+    resetActorState();
     return;
   }
 
@@ -667,14 +689,7 @@ async function loadActorContext() {
   } catch {
     // Backward compatibility: if this DB does not yet support actor context,
     // keep manager mode to avoid blocking old projects.
-    state.actor = {
-      workspace_id: null,
-      role: "manager",
-      employee_id: null,
-      merma_limit_kg: null,
-      allow_all_traspaso_sku: true,
-      display_name: null,
-    };
+    state.actor = defaultActorState();
   } finally {
     state.actorLoaded = true;
   }
@@ -4747,6 +4762,13 @@ async function safeRender() {
       await render();
     } while (renderPending);
   } catch (e) {
+    if (isSupabaseLockAbortError(e)) {
+      renderPending = true;
+      window.setTimeout(() => {
+        scheduleSafeRender();
+      }, 200);
+      return;
+    }
     layout("Error", notice("error", e?.message ? String(e.message) : "La app tuvo un error inesperado."));
   } finally {
     lastRenderCompleteAt = Date.now();
@@ -4761,44 +4783,49 @@ async function refreshAfterResume() {
   const now = Date.now();
   if (now - lastResumeRefreshAt < RESUME_REFRESH_MS) return;
   lastResumeRefreshAt = now;
-  if (route() === "capture") return;
-  try {
-    await withTimeout(loadSession(), NETWORK_TIMEOUT_MS, "Reconectando...");
-    if (!state.masterLoaded || now - masterDataLoadedAt >= MASTER_DATA_TTL_MS) {
-      state.masterLoaded = false;
-    }
-  } catch {
-    // ignore; safeRender will show auth error if needed
+  if (!state.masterLoaded || now - masterDataLoadedAt >= MASTER_DATA_TTL_MS) {
+    state.masterLoaded = false;
   }
   await safeRender();
 }
 
 async function boot() {
+  let bootHadLockAbort = false;
   try {
     await loadSession();
     await loadActorContext();
   } catch (e) {
-    layout("Error", notice("error", e?.message ? String(e.message) : "No se pudo cargar la sesion."));
+    if (isSupabaseLockAbortError(e)) {
+      bootHadLockAbort = true;
+    } else {
+      layout("Error", notice("error", e?.message ? String(e.message) : "No se pudo cargar la sesion."));
+    }
   }
 
-  supabase.auth.onAuthStateChange(async (_event, session) => {
+  let authSyncToken = 0;
+  supabase.auth.onAuthStateChange((_event, session) => {
+    const token = ++authSyncToken;
     state.session = session;
     state.masterLoaded = false;
     state.actorLoaded = false;
-    if (session) await loadActorContext();
-    else {
-      state.actor = {
-        workspace_id: null,
-        role: "manager",
-        employee_id: null,
-        merma_limit_kg: null,
-        allow_all_traspaso_sku: true,
-        display_name: null,
-      };
-      state.actorLoaded = true;
-    }
-    if (!session) navTo("login");
-    scheduleSafeRender();
+    window.setTimeout(async () => {
+      if (token !== authSyncToken) return;
+      try {
+        if (session) {
+          await loadActorContext();
+        } else {
+          resetActorState();
+        }
+      } catch (error) {
+        if (!session || isSupabaseLockAbortError(error)) {
+          resetActorState();
+        }
+      } finally {
+        if (token !== authSyncToken) return;
+        if (!session) navTo("login");
+        scheduleSafeRender();
+      }
+    }, 0);
   });
 
   const scheduleResumeRefresh = () => {
@@ -4860,6 +4887,12 @@ async function boot() {
         for (const reg of regs) reg.unregister();
       }).catch(() => {});
     });
+  }
+
+  if (bootHadLockAbort) {
+    window.setTimeout(() => {
+      scheduleSafeRender();
+    }, 200);
   }
 
   await safeRender();
