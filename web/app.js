@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.14";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.14";
+import * as cfg from "./config.js?v=2026.03.14.15";
+import { supabase } from "./supabaseClient.js?v=2026.03.14.15";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.14";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.14.15";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1589,6 +1589,12 @@ async function pageCapture(pageCtx) {
   const actorRequiresEmployee = hasProofRequirement();
   const autoEmpId = actorEmployeeId();
   const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
+  if (!isActorManager) {
+    storageRemove(STORAGE_KEYS.captureFixedDatetimeLock);
+    storageRemove(STORAGE_KEYS.captureFixedDatetimeValue);
+    storageRemove(STORAGE_KEYS.captureBatchMode);
+    storageRemove(STORAGE_KEYS.captureBatchCloseTime);
+  }
   let employeeSaleSkuIds = new Set(
     skus.map((s) => String(s.id))
   );
@@ -1654,10 +1660,12 @@ async function pageCapture(pageCtx) {
   const fixedDtSaved = storageGet(STORAGE_KEYS.captureFixedDatetimeValue, "");
   const occurredAt = h("input", {
     type: "datetime-local",
-    value: fixedDtLockOn && fixedDtSaved ? fixedDtSaved : localNowInputValue(),
+    value: isActorManager && fixedDtLockOn && fixedDtSaved ? fixedDtSaved : localNowInputValue(),
   });
   const lockOccurredAt = h("input", { type: "checkbox" });
   lockOccurredAt.checked = isActorManager && fixedDtLockOn;
+  const fixedDatetimeWarning = h("div");
+  const useNowBtn = h("button", { class: "btn btn-ghost", type: "button" }, ["Usar ahora"]);
   const aggregateMode = h("input", { type: "checkbox" });
   aggregateMode.checked = isActorManager && storageGet(STORAGE_KEYS.captureBatchMode, "0") === "1";
   const aggregateCloseTime = h("input", {
@@ -1682,6 +1690,38 @@ function setBatchClosePresetState(value) {
     setBatchClosePresetState(aggregateCloseTime.value);
     queueDraftSave();
   }
+
+  function updateFixedDatetimeWarning() {
+    if (!isActorManager || !lockOccurredAt.checked) {
+      fixedDatetimeWarning.replaceChildren();
+      return;
+    }
+    const label = occurredAt.value ? formatOccurredAt(occurredAt.value) : "(sin fecha/hora)";
+    fixedDatetimeWarning.replaceChildren(
+      notice(
+        "warn",
+        `Fecha/hora fija activa: ${label}. Todo lo que guardes seguirá usando esta fecha/hora hasta que desactives la casilla o presiones "Usar ahora".`
+      )
+    );
+  }
+
+  function setOccurredAtToNow({ persistIfLocked = true } = {}) {
+    occurredAt.value = localNowInputValue();
+    if (isActorManager && lockOccurredAt.checked && persistIfLocked) {
+      storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
+    }
+    if (isActorManager && aggregateMode.checked && !aggregateCloseTimeEdited) {
+      const suggested = batchCloseDefaultTime(occurredAt.value);
+      batchClosePresetTodayDefault.dataset.preset = suggested;
+      setAggregateCloseTime(suggested, false);
+    }
+    updateFixedDatetimeWarning();
+    queueDraftSave();
+  }
+
+  useNowBtn.addEventListener("click", () => {
+    setOccurredAtToNow({ persistIfLocked: true });
+  });
   const batchClosePreset16 = h(
     "button",
     {
@@ -1918,7 +1958,11 @@ function setBatchClosePresetState(value) {
     }
     draftRestoreInProgress = true;
     try {
-      if (draft.occurredAt) occurredAt.value = String(draft.occurredAt);
+      if (isActorManager && draft.occurredAt) {
+        occurredAt.value = String(draft.occurredAt);
+      } else {
+        occurredAt.value = localNowInputValue();
+      }
       lockOccurredAt.checked = isActorManager && !!draft.lockOccurredAt;
       aggregateMode.checked = isActorManager && !!draft.aggregateMode;
       aggregateCloseTime.value = normalizeDraftValue(draft.aggregateCloseTime, aggregateCloseTime.value);
@@ -1956,6 +2000,7 @@ function setBatchClosePresetState(value) {
         batchClosePresetTodayDefault.dataset.preset = suggested;
         setAggregateCloseTime(aggregateCloseTime.value || suggested, true);
       }
+      updateFixedDatetimeWarning();
     } finally {
       draftRestoreInProgress = false;
       queueDraftSave();
@@ -2097,6 +2142,8 @@ function setBatchClosePresetState(value) {
       batchClosePresetTodayDefault.dataset.preset = suggested;
       setAggregateCloseTime(suggested, false);
     }
+    updateFixedDatetimeWarning();
+    queueDraftSave();
   });
   aggregateCloseTime.addEventListener("change", () => {
     if (!isActorManager) return;
@@ -2111,8 +2158,11 @@ function setBatchClosePresetState(value) {
       if (!occurredAt.value) occurredAt.value = localNowInputValue();
       storageSet(STORAGE_KEYS.captureFixedDatetimeValue, String(occurredAt.value || ""));
     }
+    updateFixedDatetimeWarning();
+    queueDraftSave();
   });
   setBatchClosePresetState(aggregateCloseTime.value);
+  updateFixedDatetimeWarning();
   aggregateCloseTime.disabled = !isActorManager || !aggregateMode.checked;
   batchCloseWrap.style.display = isActorManager && aggregateMode.checked ? "" : "none";
   batchHint.style.display = isActorManager && aggregateMode.checked ? "" : "none";
@@ -2158,6 +2208,7 @@ function setBatchClosePresetState(value) {
     lineRows.length = 0;
     addLine();
     updateMode(currentMode);
+    updateFixedDatetimeWarning();
     queueDraftSave();
   }
 
@@ -2524,7 +2575,14 @@ function setBatchClosePresetState(value) {
       msg,
       pills.el,
       h("div", { class: "divider" }),
-      h("div", { class: "grid2" }, [field("Fecha/hora", occurredAt), ...(Array.isArray(reportedByField) ? reportedByField : [reportedByField])]),
+      h("div", { class: "grid2" }, [
+        h("div", { class: "col" }, [
+          field("Fecha/hora", occurredAt),
+          h("div", { class: "row-wrap" }, [useNowBtn]),
+          isActorManager ? fixedDatetimeWarning : null,
+        ]),
+        ...(Array.isArray(reportedByField) ? reportedByField : [reportedByField]),
+      ]),
       isActorManager
         ? h(
             "label",
