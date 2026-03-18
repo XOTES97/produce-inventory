@@ -5521,7 +5521,7 @@ async function pageCash(pageCtx) {
   const denominationWrap = h("div", { class: "cash-denomination-grid" });
   const adjustmentsWrap = h("div", { class: "col" });
   const summaryWrap = h("div", { class: "cash-summary-grid" });
-  const posWarningWrap = h("div");
+  const posWarningWrap = h("div", { class: "cash-pos-warning-wrap" });
   const detailMsg = h("div");
   const listMsg = h("div");
   const listWrap = h("div", { class: "col" });
@@ -5676,10 +5676,17 @@ async function pageCash(pageCtx) {
 
     if (Math.abs(computed.invoicedSalesMismatchAmount) >= 0.005) {
       posWarningWrap.replaceChildren(
-        notice(
-          "warn",
-          `Revisa ventas facturadas: crédito + efectivo = ${fmtMoney(computed.creditInvoicedSalesAmount + computed.cashInvoicedSalesAmount)}, pero Total de ventas facturadas = ${fmtMoney(computed.totalInvoicedSalesAmount)}.`
-        )
+        h("div", { class: "cash-pos-warning" }, [
+          h("div", { class: "cash-pos-warning-title", text: "Advertencia de control" }),
+          h(
+            "div",
+            {
+              class: "cash-pos-warning-body",
+              text: `Revisa ventas facturadas: crédito + efectivo = ${fmtMoney(computed.creditInvoicedSalesAmount + computed.cashInvoicedSalesAmount)}, pero Total de ventas facturadas = ${fmtMoney(computed.totalInvoicedSalesAmount)}.`
+            }
+          ),
+          h("div", { class: "cash-pos-warning-note muted", text: "No bloquea el envío del corte, pero conviene corregirlo o confirmarlo antes de guardarlo." }),
+        ])
       );
     } else {
       posWarningWrap.replaceChildren();
