@@ -247,6 +247,19 @@ textarea { min-height: 84px; resize: vertical; }
   .topbar-inner { padding-left: 14px; padding-right: 14px; }
   .content { padding-left: 14px; padding-right: 14px; }
   .topbar-signout { padding: 6px 8px; }
+  .bottomnav-inner {
+    display: flex;
+    overflow-x: auto;
+    gap: 8px;
+    padding-left: 10px;
+    padding-right: 10px;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .navbtn {
+    flex: 0 0 88px;
+    scroll-snap-align: center;
+  }
 }
 
 .btn {
@@ -424,6 +437,140 @@ textarea { min-height: 84px; resize: vertical; }
   margin: 12px 0;
 }
 
+.cash-line-grid,
+.cash-adjustment-grid {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+}
+
+.cash-line-grid {
+  grid-template-columns: minmax(160px, 1.2fr) minmax(110px, 0.8fr) minmax(92px, 0.6fr) minmax(180px, 1.2fr) auto;
+}
+
+.cash-adjustment-grid {
+  grid-template-columns: minmax(220px, 1.4fr) minmax(108px, 0.8fr) minmax(110px, 0.8fr) minmax(160px, 1fr) minmax(180px, 1.1fr) minmax(120px, 0.9fr);
+}
+
+.cash-line-grid-head,
+.cash-adjustment-grid-head {
+  font-size: 11px;
+}
+
+.cash-inline-box {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.76);
+}
+
+.cash-inline-value {
+  font-size: 13px;
+}
+
+.cash-denomination-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cash-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cash-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 110px;
+}
+
+.cash-summary-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cash-summary-value {
+  font-size: 19px;
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.cash-diff-ok {
+  color: var(--green2);
+}
+
+.cash-diff-warn {
+  color: var(--amber);
+}
+
+.cash-diff-error {
+  color: var(--red);
+}
+
+.cash-printable {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cash-print-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cash-report-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cash-report-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.7);
+}
+
+.cash-report-diff.cash-diff-ok {
+  border-color: rgba(29, 107, 58, 0.2);
+  background: rgba(29, 107, 58, 0.08);
+}
+
+.cash-report-diff.cash-diff-warn {
+  border-color: rgba(179, 122, 0, 0.22);
+  background: rgba(179, 122, 0, 0.08);
+}
+
+.cash-report-diff.cash-diff-error {
+  border-color: rgba(179, 41, 47, 0.24);
+  background: rgba(179, 41, 47, 0.08);
+}
+
+.cash-signatures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.cash-signature-line {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .right { text-align: right; }
 .delta-pos { color: var(--green2); }
 .delta-neg { color: var(--red); }
@@ -439,12 +586,12 @@ textarea { min-height: 84px; resize: vertical; }
 
 @media (max-width: 430px) {
   .bottomnav-inner {
-    grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
     gap: 7px;
     padding: 8px 6px calc(8px + env(safe-area-inset-bottom));
   }
   .navbtn {
     min-height: 64px;
+    flex-basis: 84px;
     padding: 7px 4px 6px;
   }
   .navbtn .icon {
@@ -454,6 +601,22 @@ textarea { min-height: 84px; resize: vertical; }
   }
   .navbtn .label {
     font-size: 10.5px;
+  }
+}
+
+@media (max-width: 900px) {
+  .cash-denomination-grid,
+  .cash-summary-grid,
+  .cash-signatures {
+    grid-template-columns: 1fr;
+  }
+  .cash-line-grid,
+  .cash-adjustment-grid {
+    grid-template-columns: 1fr;
+  }
+  .cash-line-grid-head,
+  .cash-adjustment-grid-head {
+    display: none;
   }
 }
 .thumb {
@@ -545,6 +708,13 @@ textarea { min-height: 84px; resize: vertical; }
     box-shadow: none;
     border-color: #d8d8d8;
     background: #fff;
+  }
+
+  .cash-printable .card,
+  .cash-report-summary,
+  .cash-signatures {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }
 

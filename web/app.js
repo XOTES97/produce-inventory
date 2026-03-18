@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.14.25";
-import { supabase } from "./supabaseClient.js?v=2026.03.14.25";
+import * as cfg from "./config.js?v=2026.03.17.01";
+import { supabase } from "./supabaseClient.js?v=2026.03.17.01";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.14.25";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.17.01";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -15,12 +15,14 @@ const ROUTE_TITLES = {
   inventory: "Inventario",
   hypothetical: "Hipotetico",
   cutoffs: "Cortes",
+  cash: "Caja",
   reports: "Reportes",
   settings: "Ajustes",
 };
 
 const NAV_ITEMS = [
   { route: "capture", label: "Capturar", icon: "+" },
+  { route: "cash", label: "Caja", icon: "$" },
   { route: "movements", label: "Movimientos", icon: "LOG" },
   { route: "inventory", label: "Inventario", icon: "KG" },
   { route: "hypothetical", label: "Hipotetico", icon: "SIM" },
@@ -43,9 +45,79 @@ const DEFAULT_PROOF_STAMP_ROWS = 2;
 const CAPTURE_DRAFT_AUTOSAVE_MS = 450;
 const CAPTURE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const CAPTURE_DRAFT_SCHEMA_VERSION = 1;
+const CASH_DEFAULT_EXCHANGE_RATE = 17.5;
+const CASH_DEFAULT_INITIAL_FUND = 1000;
+const CASH_DEFAULT_CUT_TYPE = "Corte Z";
+const CASH_DEFAULT_BRANCH = "Sucursal principal";
+const CASH_PRODUCT_LINE_MIN = 4;
+const CASH_LIST_PAGE_SIZE = 30;
+const CASH_MXN_BILLS = [1000, 500, 200, 100, 50, 20];
+const CASH_MXN_COINS = [20, 10, 5, 2, 1, 0.5];
+const CASH_USD_DENOMS = [100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
+const CASH_ADJUSTMENT_META = {
+  fondo_inicial: {
+    label: "Fondo de caja inicial",
+    affectsCash: true,
+    fixedSign: "positive",
+    defaultDirection: "entrada",
+  },
+  reembolso_dia: {
+    label: "Reembolsos del dia",
+    affectsCash: true,
+    fixedSign: "negative",
+    defaultDirection: "salida",
+    syncFromRefunds: true,
+  },
+  gasto_caja: {
+    label: "Gastos pagados con caja",
+    affectsCash: true,
+    fixedSign: "negative",
+    defaultDirection: "salida",
+  },
+  deposito_retiro_parcial: {
+    label: "Depositos / retiros parciales",
+    affectsCash: true,
+    fixedSign: "direction",
+    defaultDirection: "entrada",
+  },
+  vale_comprobante: {
+    label: "Vales / comprobantes",
+    affectsCash: true,
+    fixedSign: "direction",
+    defaultDirection: "salida",
+  },
+  cheque: {
+    label: "Cheques",
+    affectsCash: true,
+    fixedSign: "direction",
+    defaultDirection: "entrada",
+  },
+  transferencia_identificada: {
+    label: "Transferencias identificadas",
+    affectsCash: false,
+    fixedSign: "direction",
+    defaultDirection: "entrada",
+  },
+  otro_ajuste: {
+    label: "Otros ajustes (+/-)",
+    affectsCash: true,
+    fixedSign: "direction",
+    defaultDirection: "entrada",
+  },
+};
+const CASH_ADJUSTMENT_ORDER = [
+  "fondo_inicial",
+  "reembolso_dia",
+  "gasto_caja",
+  "deposito_retiro_parcial",
+  "vale_comprobante",
+  "cheque",
+  "transferencia_identificada",
+  "otro_ajuste",
+];
 
 const ROUTE_ACCESS = {
-  employee: new Set(["capture"]),
+  employee: new Set(["capture", "cash"]),
   manager: null,
 };
 
@@ -65,7 +137,7 @@ const MOVEMENT_TYPES_BY_ROLE = {
 };
 const ROUTE_BY_ROLE = {
   manager: null,
-  employee: new Set(["capture"]),
+  employee: new Set(["capture", "cash"]),
   none: new Set(),
 };
 
@@ -92,6 +164,14 @@ const state = {
   captureSubmitting: false,
   captureFlashNotice: null,
   captureNextMode: null,
+  cashSubmitting: false,
+  cashFlashNotice: null,
+  cashDraft: null,
+  cashFilters: {
+    business_date: "",
+    cashier_employee_id: "",
+  },
+  cashSelectedId: null,
 };
 
 const IS_MOBILE_DEVICE = typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(String(navigator.userAgent || ""));
@@ -956,6 +1036,343 @@ function movementShortId(movementOrId, explicitReferenceNumber = null) {
   return raw ? `FST-${raw}` : "FST-";
 }
 
+function roundMoneyValue(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+function roundRateValue(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 10000) / 10000;
+}
+
+function numberFromInput(value, fallback = 0) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function integerFromInput(value, fallback = 0) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.trunc(n);
+}
+
+function trimmedOrEmpty(value) {
+  return String(value ?? "").trim();
+}
+
+function dateOnlyToday() {
+  return localDatePartFromInput(localNowInputValue());
+}
+
+function fmtSignedMoney(n, currency = DEFAULT_CURRENCY) {
+  const value = Number(n);
+  if (!Number.isFinite(value)) return fmtMoney(0, currency);
+  const prefix = value < 0 ? "-" : "";
+  return `${prefix}${fmtMoney(Math.abs(value), currency)}`;
+}
+
+function cashCutShortId(cutOrDate, explicitDailySequence = null) {
+  const dateValue =
+    cutOrDate && typeof cutOrDate === "object"
+      ? String(cutOrDate.business_date || "").trim()
+      : String(cutOrDate || "").trim();
+  const seqValue =
+    explicitDailySequence != null
+      ? explicitDailySequence
+      : cutOrDate && typeof cutOrDate === "object"
+        ? cutOrDate.daily_sequence
+        : null;
+  const seq = Math.max(1, Math.trunc(Number(seqValue || 0) || 0));
+  return dateValue ? `CZ-${dateValue}-${seq}` : `CZ-${seq}`;
+}
+
+function cashAdjustmentLabel(type) {
+  return CASH_ADJUSTMENT_META[type]?.label || String(type || "");
+}
+
+function cashAdjustmentDirectionLabel(direction) {
+  return String(direction || "entrada") === "salida" ? "Salida" : "Entrada";
+}
+
+function defaultCashProductLine() {
+  return {
+    product_label: "",
+    amount: "",
+    note: "",
+  };
+}
+
+function defaultCashDenominationLines() {
+  const rows = [];
+  for (const denomination of CASH_MXN_BILLS) {
+    rows.push({ currency: "MXN", kind: "bill", denomination, quantity: "" });
+  }
+  for (const denomination of CASH_MXN_COINS) {
+    rows.push({ currency: "MXN", kind: "coin", denomination, quantity: "" });
+  }
+  for (const denomination of CASH_USD_DENOMS) {
+    rows.push({ currency: "USD", kind: denomination >= 1 ? "bill" : "coin", denomination, quantity: "" });
+  }
+  return rows;
+}
+
+function defaultCashAdjustments() {
+  return CASH_ADJUSTMENT_ORDER.map((adjustmentType) => ({
+    adjustment_type: adjustmentType,
+    direction: CASH_ADJUSTMENT_META[adjustmentType]?.defaultDirection || "entrada",
+    amount: adjustmentType === "fondo_inicial" ? CASH_DEFAULT_INITIAL_FUND.toFixed(2) : "",
+    support_reference: "",
+    note: "",
+  }));
+}
+
+function createCashCutDraft() {
+  const nowLocal = localNowInputValue();
+  const currentEmployeeId = actorEmployeeId();
+  const currentEmployeeName = currentEmployeeId ? employeeName(currentEmployeeId) : "";
+  const displayName = getActorDisplayName() || currentEmployeeName || "";
+  return {
+    business_date: dateOnlyToday(),
+    branch_name: CASH_DEFAULT_BRANCH,
+    cut_type: CASH_DEFAULT_CUT_TYPE,
+    cut_folio: "",
+    started_at: nowLocal,
+    ended_at: nowLocal,
+    cashier_employee_id: actorRole() === "employee" ? currentEmployeeId || "" : "",
+    cashier_system_name: displayName,
+    customers_served: "",
+    ticket_start_folio: "",
+    ticket_end_folio: "",
+    delivered_by: displayName,
+    received_by: "",
+    observations: "",
+    invoice_sale_amount: "",
+    cash_receipts_amount: "",
+    refund_receipts_amount: "",
+    sales_mxn_amount: "",
+    sales_usd_amount: "",
+    exchange_rate: CASH_DEFAULT_EXCHANGE_RATE.toFixed(2),
+    iva_zero_amount: "",
+    ticket_total_amount: "",
+    product_lines: Array.from({ length: CASH_PRODUCT_LINE_MIN }, () => defaultCashProductLine()),
+    denomination_lines: defaultCashDenominationLines(),
+    adjustment_lines: defaultCashAdjustments(),
+  };
+}
+
+function ensureCashDraft() {
+  if (!state.cashDraft || typeof state.cashDraft !== "object") {
+    state.cashDraft = createCashCutDraft();
+  }
+  const draft = state.cashDraft;
+  if (!Array.isArray(draft.product_lines)) draft.product_lines = [];
+  while (draft.product_lines.length < CASH_PRODUCT_LINE_MIN) draft.product_lines.push(defaultCashProductLine());
+  if (!Array.isArray(draft.denomination_lines) || draft.denomination_lines.length === 0) {
+    draft.denomination_lines = defaultCashDenominationLines();
+  }
+  if (!Array.isArray(draft.adjustment_lines) || draft.adjustment_lines.length === 0) {
+    draft.adjustment_lines = defaultCashAdjustments();
+  }
+  const existingAdjustments = new Map((draft.adjustment_lines || []).map((row) => [row.adjustment_type, row]));
+  draft.adjustment_lines = CASH_ADJUSTMENT_ORDER.map((type) => {
+    const found = existingAdjustments.get(type) || {};
+    return {
+      adjustment_type: type,
+      direction: found.direction || CASH_ADJUSTMENT_META[type]?.defaultDirection || "entrada",
+      amount:
+        found.amount != null && String(found.amount).trim() !== ""
+          ? String(found.amount)
+          : type === "fondo_inicial"
+            ? CASH_DEFAULT_INITIAL_FUND.toFixed(2)
+            : "",
+      support_reference: found.support_reference || "",
+      note: found.note || "",
+    };
+  });
+
+  if (actorRole() === "employee") {
+    const linkedEmployeeId = actorEmployeeId() || "";
+    draft.cashier_employee_id = linkedEmployeeId;
+    if (!trimmedOrEmpty(draft.delivered_by)) {
+      draft.delivered_by = getActorDisplayName() || employeeName(linkedEmployeeId) || "";
+    }
+  }
+
+  if (!trimmedOrEmpty(draft.business_date)) draft.business_date = dateOnlyToday();
+  if (!trimmedOrEmpty(draft.cut_type)) draft.cut_type = CASH_DEFAULT_CUT_TYPE;
+  if (!trimmedOrEmpty(draft.exchange_rate)) draft.exchange_rate = CASH_DEFAULT_EXCHANGE_RATE.toFixed(2);
+  if (!trimmedOrEmpty(draft.branch_name)) draft.branch_name = CASH_DEFAULT_BRANCH;
+  if (!trimmedOrEmpty(draft.started_at)) draft.started_at = localNowInputValue();
+  if (!trimmedOrEmpty(draft.ended_at)) draft.ended_at = draft.started_at;
+
+  return draft;
+}
+
+function resetCashDraft() {
+  state.cashDraft = createCashCutDraft();
+}
+
+function computeCashCutDraft(draft) {
+  const safeDraft = draft || ensureCashDraft();
+  const exchangeRate = roundRateValue(numberFromInput(safeDraft.exchange_rate, CASH_DEFAULT_EXCHANGE_RATE));
+  const cashReceiptsAmount = roundMoneyValue(numberFromInput(safeDraft.cash_receipts_amount, 0));
+  const refundReceiptsAmount = roundMoneyValue(numberFromInput(safeDraft.refund_receipts_amount, 0));
+  const netCashSalesAmount = roundMoneyValue(cashReceiptsAmount - refundReceiptsAmount);
+  const salesUsdAmount = roundMoneyValue(numberFromInput(safeDraft.sales_usd_amount, 0));
+  const salesUsdMxnAmount = roundMoneyValue(salesUsdAmount * exchangeRate);
+  const ticketTotalAmount = roundMoneyValue(numberFromInput(safeDraft.ticket_total_amount, 0));
+
+  const productLines = (safeDraft.product_lines || []).map((row) => {
+    const amount = roundMoneyValue(numberFromInput(row?.amount, 0));
+    const participation = ticketTotalAmount > 0 ? (amount / ticketTotalAmount) * 100 : 0;
+    return {
+      product_label: trimmedOrEmpty(row?.product_label),
+      amount,
+      note: trimmedOrEmpty(row?.note),
+      participation,
+    };
+  });
+
+  let totalMxnBillsAmount = 0;
+  let totalMxnCoinsAmount = 0;
+  let totalUsdAmount = 0;
+  const denominationLines = (safeDraft.denomination_lines || []).map((row) => {
+    const currency = String(row?.currency || "").toUpperCase();
+    const kind = String(row?.kind || "").toLowerCase();
+    const denomination = roundMoneyValue(numberFromInput(row?.denomination, 0));
+    const quantity = Math.max(0, integerFromInput(row?.quantity, 0));
+    const lineTotal = roundMoneyValue(denomination * quantity);
+
+    if (currency === "MXN" && kind === "bill") totalMxnBillsAmount += lineTotal;
+    else if (currency === "MXN") totalMxnCoinsAmount += lineTotal;
+    else totalUsdAmount += lineTotal;
+
+    return {
+      currency,
+      kind,
+      denomination,
+      quantity,
+      line_total: lineTotal,
+    };
+  });
+
+  const totalUsdMxnAmount = roundMoneyValue(totalUsdAmount * exchangeRate);
+  const totalCountedCashAmount = roundMoneyValue(totalMxnBillsAmount + totalMxnCoinsAmount + totalUsdMxnAmount);
+
+  let totalCashAdjustmentsAmount = 0;
+  let identifiedTransfersAmount = 0;
+  const adjustments = CASH_ADJUSTMENT_ORDER.map((type) => {
+    const meta = CASH_ADJUSTMENT_META[type];
+    const row = (safeDraft.adjustment_lines || []).find((item) => item?.adjustment_type === type) || {};
+    const rawAmount = meta?.syncFromRefunds ? refundReceiptsAmount : roundMoneyValue(numberFromInput(row?.amount, 0));
+    const direction = row?.direction || meta?.defaultDirection || "entrada";
+    let signedAmount = rawAmount;
+    if (meta?.fixedSign === "negative") signedAmount = -rawAmount;
+    else if (meta?.fixedSign === "direction") signedAmount = direction === "salida" ? -rawAmount : rawAmount;
+    else signedAmount = rawAmount;
+    signedAmount = roundMoneyValue(signedAmount);
+    if (meta?.affectsCash) totalCashAdjustmentsAmount += signedAmount;
+    else identifiedTransfersAmount += signedAmount;
+    return {
+      adjustment_type: type,
+      label: meta?.label || type,
+      direction,
+      amount: rawAmount,
+      signed_amount: signedAmount,
+      affects_cash: !!meta?.affectsCash,
+      support_reference: trimmedOrEmpty(row?.support_reference),
+      note: trimmedOrEmpty(row?.note),
+      is_amount_read_only: !!meta?.syncFromRefunds,
+      fixed_sign: meta?.fixedSign || "direction",
+    };
+  });
+
+  totalCashAdjustmentsAmount = roundMoneyValue(totalCashAdjustmentsAmount);
+  identifiedTransfersAmount = roundMoneyValue(identifiedTransfersAmount);
+
+  const expectedCashAmount = roundMoneyValue(netCashSalesAmount + totalCashAdjustmentsAmount);
+  const differenceAmount = roundMoneyValue(totalCountedCashAmount - expectedCashAmount);
+
+  return {
+    exchangeRate,
+    invoiceSaleAmount: roundMoneyValue(numberFromInput(safeDraft.invoice_sale_amount, 0)),
+    cashReceiptsAmount,
+    refundReceiptsAmount,
+    netCashSalesAmount,
+    salesMxnAmount: roundMoneyValue(numberFromInput(safeDraft.sales_mxn_amount, 0)),
+    salesUsdAmount,
+    salesUsdMxnAmount,
+    ivaZeroAmount: roundMoneyValue(numberFromInput(safeDraft.iva_zero_amount, 0)),
+    ticketTotalAmount,
+    productLines,
+    denominationLines,
+    adjustments,
+    totalMxnBillsAmount: roundMoneyValue(totalMxnBillsAmount),
+    totalMxnCoinsAmount: roundMoneyValue(totalMxnCoinsAmount),
+    totalUsdAmount: roundMoneyValue(totalUsdAmount),
+    totalUsdMxnAmount,
+    totalCountedCashAmount,
+    totalCashAdjustmentsAmount,
+    identifiedTransfersAmount,
+    expectedCashAmount,
+    differenceAmount,
+  };
+}
+
+function normalizeCashCutError(message) {
+  const code = String(message || "").trim();
+  if (!code) return "";
+  switch (code) {
+    case "cash_cut_required":
+      return "Falta la captura principal del Corte Z.";
+    case "cash_cut_business_date_required":
+      return "Selecciona la fecha del dia que estás cerrando.";
+    case "cash_cut_time_required":
+      return "Captura inicio y fin del corte.";
+    case "cash_cut_time_invalid":
+      return "La hora de cierre no puede ser anterior al inicio del corte.";
+    case "cash_cut_denominations_invalid":
+      return "Las denominaciones del arqueo no tienen un formato válido.";
+    case "cash_cut_adjustments_invalid":
+      return "Los ajustes del cajero no tienen un formato válido.";
+    case "cash_cut_adjustment_amount_invalid":
+      return "Hay un ajuste con importe inválido.";
+    case "cash_cut_product_label_required":
+      return "Cada linea de producto con importe debe tener nombre.";
+    case "cash_cut_product_amount_invalid":
+      return "Hay un importe de producto inválido.";
+    case "cash_cut_actor_invalid":
+      return "No se pudo validar el acceso del usuario para capturar el corte.";
+    case "employee_not_linked":
+      return "Este usuario empleado no está ligado a un empleado activo.";
+    case "employee_must_match_linked_employee":
+      return "El empleado del corte debe coincidir con el usuario que inició sesión.";
+    case "employee_invalid":
+      return "El empleado seleccionado no está activo o no es válido.";
+    default:
+      return code;
+  }
+}
+
+function cashDifferenceKind(value) {
+  const amount = roundMoneyValue(value);
+  if (Math.abs(amount) < 0.005) return "ok";
+  return amount > 0 ? "warn" : "error";
+}
+
+function cashDifferenceText(value) {
+  const amount = roundMoneyValue(value);
+  if (Math.abs(amount) < 0.005) return "Sin diferencia";
+  return amount > 0 ? `Sobrante ${fmtMoney(amount)}` : `Faltante ${fmtMoney(Math.abs(amount))}`;
+}
+
 async function loadSession() {
   try {
     const { data, error } = await supabase.auth.getSession();
@@ -1177,6 +1594,37 @@ function field(labelText, inputEl) {
 
 function labeledField(labelText, inputEl, inputId) {
   return h("div", {}, [h("label", { for: inputId, text: labelText }), inputEl]);
+}
+
+function createInput(type = "text", value = "", attrs = {}) {
+  const el = h("input", { type, ...attrs });
+  if (value != null) el.value = String(value);
+  return el;
+}
+
+function createTextarea(value = "", attrs = {}) {
+  const el = h("textarea", attrs);
+  el.value = value != null ? String(value) : "";
+  return el;
+}
+
+function createSelect(options = [], value = "", attrs = {}) {
+  const children = [];
+  for (const option of options) {
+    children.push(
+      h(
+        "option",
+        {
+          value: option?.value ?? "",
+          disabled: option?.disabled ? "true" : null,
+        },
+        [option?.label ?? ""]
+      )
+    );
+  }
+  const el = h("select", attrs, children);
+  el.value = value != null ? String(value) : "";
+  return el;
 }
 
 function tableScroll(tableEl) {
@@ -5016,6 +5464,943 @@ async function pageCutoffs(pageCtx) {
   await loadCutoffs();
 }
 
+async function pageCash(pageCtx) {
+  const isActive = () => isPageContextActive(pageCtx);
+  const managerMode = isManager();
+  const employeeMode = actorRole() === "employee";
+  const draft = ensureCashDraft();
+  const activeEmployees = [...state.employees]
+    .filter((employee) => employee.is_active)
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  const cashierOptions = [
+    { value: "", label: "Elige empleado..." },
+    ...activeEmployees.map((employee) => ({
+      value: employee.id,
+      label: employee.name,
+    })),
+  ];
+
+  const formMsg = h("div");
+  const productRowsWrap = h("div", { class: "col" });
+  const denominationWrap = h("div", { class: "cash-denomination-grid" });
+  const adjustmentsWrap = h("div", { class: "col" });
+  const summaryWrap = h("div", { class: "cash-summary-grid" });
+  const detailMsg = h("div");
+  const listMsg = h("div");
+  const listWrap = h("div", { class: "col" });
+  let loadingList = false;
+  let loadingDetail = false;
+  let listRows = [];
+
+  const productParticipationEls = [];
+  const productAmountEls = [];
+  const denominationTotalEls = [];
+  const adjustmentAmountEls = [];
+  const adjustmentDirectionEls = [];
+  const adjustmentEffectEls = [];
+  const summaryRefs = {};
+  const detailTitle = h("div", { class: "h1", text: "Reporte imprimible" });
+  const detailCard = managerMode
+    ? h("div", { class: "card col" }, [
+        h("div", { class: "row-wrap no-print" }, [
+          detailTitle,
+          h("div", { class: "spacer" }),
+          h(
+            "button",
+            {
+              class: "btn",
+              type: "button",
+              onclick: () => window.print(),
+            },
+            ["Imprimir"]
+          ),
+          h(
+            "button",
+            {
+              class: "btn btn-ghost",
+              type: "button",
+              onclick: () => {
+                state.cashSelectedId = null;
+                detailTitle.textContent = "Reporte imprimible";
+                detailMsg.replaceChildren(notice("warn", "Elige un corte para revisar o imprimir."));
+                scheduleSafeRender();
+              },
+            },
+            ["Cerrar reporte"]
+          ),
+        ]),
+        detailMsg,
+      ])
+    : null;
+
+  const businessDateInput = createInput("date", draft.business_date);
+  const branchNameInput = createInput("text", draft.branch_name, { placeholder: "Sucursal" });
+  const cutTypeInput = createInput("text", draft.cut_type, { placeholder: "Corte Z" });
+  const cutFolioInput = createInput("text", draft.cut_folio, { placeholder: "Opcional" });
+  const startedAtInput = createInput("datetime-local", draft.started_at);
+  const endedAtInput = createInput("datetime-local", draft.ended_at);
+  const cashierInput = employeeMode
+    ? h("div", { class: "notice" }, [h("div", { text: employeeName(draft.cashier_employee_id) || getActorDisplayName() || "Empleado no ligado" })])
+    : createSelect(cashierOptions, draft.cashier_employee_id);
+  const cashierSystemInput = createInput("text", draft.cashier_system_name, { placeholder: "Nombre en sistema" });
+  const customersServedInput = createInput("number", draft.customers_served, { min: "0", step: "1", inputmode: "numeric" });
+  const ticketStartFolioInput = createInput("text", draft.ticket_start_folio);
+  const ticketEndFolioInput = createInput("text", draft.ticket_end_folio);
+  const deliveredByInput = createInput("text", draft.delivered_by);
+  const receivedByInput = createInput("text", draft.received_by);
+  const observationsInput = createTextarea(draft.observations, { placeholder: "Observaciones generales del corte..." });
+
+  const invoiceSaleInput = createInput("number", draft.invoice_sale_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const cashReceiptsInput = createInput("number", draft.cash_receipts_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const refundReceiptsInput = createInput("number", draft.refund_receipts_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const netCashSalesInput = createInput("text", "", { readonly: "true" });
+  const salesMxnInput = createInput("number", draft.sales_mxn_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const salesUsdInput = createInput("number", draft.sales_usd_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const exchangeRateInput = createInput("number", draft.exchange_rate, { min: "0", step: "0.0001", inputmode: "decimal" });
+  const salesUsdMxnInput = createInput("text", "", { readonly: "true" });
+  const ivaZeroInput = createInput("number", draft.iva_zero_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const ticketTotalInput = createInput("number", draft.ticket_total_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+
+  const listBusinessDateInput = createInput("date", state.cashFilters.business_date || "");
+  const listCashierInput = createSelect(cashierOptions, state.cashFilters.cashier_employee_id || "");
+
+  function clearCashFlash() {
+    if (!state.cashFlashNotice) return;
+    state.cashFlashNotice = null;
+    formMsg.replaceChildren();
+  }
+
+  function showCashFormNotice(kind, text) {
+    formMsg.replaceChildren(notice(kind, text));
+  }
+
+  function showStoredCashNotice() {
+    formMsg.replaceChildren();
+    if (!state.cashFlashNotice) return;
+    formMsg.appendChild(notice(state.cashFlashNotice.kind || "ok", state.cashFlashNotice.text || ""));
+  }
+
+  function setTextSummary(key, label, value, extraClass = "") {
+    const card = summaryRefs[key];
+    if (!card) return;
+    card.label.textContent = label;
+    card.value.textContent = value;
+    card.value.className = `cash-summary-value${extraClass ? ` ${extraClass}` : ""}`;
+  }
+
+  function refreshComputed() {
+    const computed = computeCashCutDraft(draft);
+    netCashSalesInput.value = fmtMoney(computed.netCashSalesAmount);
+    salesUsdMxnInput.value = fmtMoney(computed.salesUsdMxnAmount);
+
+    computed.productLines.forEach((row, index) => {
+      if (productParticipationEls[index]) {
+        productParticipationEls[index].textContent = `${row.participation.toFixed(1)}%`;
+      }
+      if (productAmountEls[index] && document.activeElement !== productAmountEls[index]) {
+        productAmountEls[index].value = draft.product_lines[index]?.amount ?? "";
+      }
+    });
+
+    computed.denominationLines.forEach((row, index) => {
+      if (denominationTotalEls[index]) denominationTotalEls[index].textContent = fmtMoney(row.line_total, row.currency);
+    });
+
+    computed.adjustments.forEach((row, index) => {
+      const amountEl = adjustmentAmountEls[index];
+      const directionEl = adjustmentDirectionEls[index];
+      const effectEl = adjustmentEffectEls[index];
+      if (amountEl) {
+        if (row.is_amount_read_only) {
+          amountEl.value = row.amount ? row.amount.toFixed(2) : "";
+        }
+        amountEl.readOnly = row.is_amount_read_only;
+      }
+      if (directionEl) {
+        directionEl.disabled = row.fixed_sign !== "direction";
+        directionEl.value = row.direction || "entrada";
+      }
+      if (effectEl) {
+        effectEl.textContent = row.affects_cash ? fmtSignedMoney(row.signed_amount) : "No entra a efectivo";
+        effectEl.className = `mono ${row.affects_cash ? (row.signed_amount < 0 ? "delta-neg" : "delta-pos") : "muted"}`;
+      }
+    });
+
+    setTextSummary("countedMxn", "Efectivo contado MXN", fmtMoney(computed.totalMxnBillsAmount + computed.totalMxnCoinsAmount));
+    setTextSummary("countedUsd", "USD contado", fmtMoney(computed.totalUsdAmount, "USD"));
+    setTextSummary("countedUsdMxn", "USD contado en MXN", fmtMoney(computed.totalUsdMxnAmount));
+    setTextSummary("physicalTotal", "Total fisico contado", fmtMoney(computed.totalCountedCashAmount));
+    setTextSummary("expectedCash", "Esperado en efectivo", fmtMoney(computed.expectedCashAmount));
+    setTextSummary("adjustments", "Ajustes que afectan efectivo", fmtSignedMoney(computed.totalCashAdjustmentsAmount));
+    setTextSummary("transfers", "Transferencias identificadas", fmtSignedMoney(computed.identifiedTransfersAmount));
+    setTextSummary(
+      "difference",
+      "Diferencia",
+      cashDifferenceText(computed.differenceAmount),
+      `cash-diff-${cashDifferenceKind(computed.differenceAmount)}`
+    );
+
+    return computed;
+  }
+
+  function renderProductRows() {
+    productParticipationEls.length = 0;
+    productAmountEls.length = 0;
+
+    const header = h("div", { class: "cash-line-grid cash-line-grid-head muted mono" }, [
+      h("div", { text: "Producto" }),
+      h("div", { text: "Importe" }),
+      h("div", { text: "Participacion" }),
+      h("div", { text: "Notas" }),
+      h("div", { text: "" }),
+    ]);
+
+    const rows = draft.product_lines.map((row, index) => {
+      const productLabelInput = createInput("text", row.product_label, { placeholder: "Producto" });
+      const amountInput = createInput("number", row.amount, { min: "0", step: "0.01", inputmode: "decimal" });
+      const participationValue = h("div", { class: "mono muted cash-inline-value", text: "0.0%" });
+      const noteInput = createInput("text", row.note, { placeholder: "Notas" });
+      const removeBtn = h(
+        "button",
+        {
+          class: "btn btn-ghost",
+          type: "button",
+          onclick: () => {
+            draft.product_lines.splice(index, 1);
+            while (draft.product_lines.length < CASH_PRODUCT_LINE_MIN) draft.product_lines.push(defaultCashProductLine());
+            scheduleSafeRender();
+          },
+        },
+        ["Quitar"]
+      );
+      if (draft.product_lines.length <= CASH_PRODUCT_LINE_MIN) removeBtn.disabled = true;
+
+      productLabelInput.addEventListener("input", () => {
+        clearCashFlash();
+        row.product_label = productLabelInput.value;
+      });
+      amountInput.addEventListener("input", () => {
+        clearCashFlash();
+        row.amount = amountInput.value;
+        refreshComputed();
+      });
+      noteInput.addEventListener("input", () => {
+        clearCashFlash();
+        row.note = noteInput.value;
+      });
+
+      productParticipationEls[index] = participationValue;
+      productAmountEls[index] = amountInput;
+
+      return h("div", { class: "cash-line-grid" }, [
+        productLabelInput,
+        amountInput,
+        h("div", { class: "cash-inline-box" }, [participationValue]),
+        noteInput,
+        removeBtn,
+      ]);
+    });
+
+    const addBtn = h(
+      "button",
+      {
+        class: "btn",
+        type: "button",
+        onclick: () => {
+          draft.product_lines.push(defaultCashProductLine());
+          scheduleSafeRender();
+        },
+      },
+      ["Agregar producto"]
+    );
+
+    productRowsWrap.replaceChildren(
+      h("div", { class: "muted", text: "Desglose opcional del ticket por producto. La participación se calcula sobre Total del ticket." }),
+      header,
+      ...rows,
+      h("div", { class: "row-wrap" }, [addBtn])
+    );
+  }
+
+  function renderDenominationSection(title, currency, rows, startIndexOffset) {
+    const table = h("table", { class: "table" }, [
+      h("thead", {}, [
+        h("tr", {}, [h("th", { text: title }), h("th", { text: "Cantidad" }), h("th", { text: "Total" })]),
+      ]),
+      h(
+        "tbody",
+        {},
+        rows.map((row, localIndex) => {
+          const globalIndex = startIndexOffset + localIndex;
+          const quantityInput = createInput("number", row.quantity, { min: "0", step: "1", inputmode: "numeric" });
+          const totalValue = h("div", { class: "mono", text: fmtMoney(0, currency) });
+          quantityInput.addEventListener("input", () => {
+            clearCashFlash();
+            draft.denomination_lines[globalIndex].quantity = quantityInput.value;
+            refreshComputed();
+          });
+          denominationTotalEls[globalIndex] = totalValue;
+          return h("tr", {}, [
+            h("td", { class: "mono", text: currency === "USD" ? fmtMoney(row.denomination, "USD") : fmtMoney(row.denomination) }),
+            h("td", {}, [quantityInput]),
+            h("td", {}, [totalValue]),
+          ]);
+        })
+      ),
+    ]);
+    return h("div", { class: "card col" }, [h("div", { class: "h1", text: title }), tableScroll(table)]);
+  }
+
+  function renderDenominations() {
+    denominationTotalEls.length = 0;
+    const mxnBills = draft.denomination_lines.filter((row) => row.currency === "MXN" && row.kind === "bill");
+    const mxnCoins = draft.denomination_lines.filter((row) => row.currency === "MXN" && row.kind === "coin");
+    const usdRows = draft.denomination_lines.filter((row) => row.currency === "USD");
+    const mxnBillsOffset = 0;
+    const mxnCoinsOffset = mxnBills.length;
+    const usdOffset = mxnBills.length + mxnCoins.length;
+    denominationWrap.replaceChildren(
+      renderDenominationSection("Arqueo MXN - Billetes", "MXN", mxnBills, mxnBillsOffset),
+      renderDenominationSection("Arqueo MXN - Monedas", "MXN", mxnCoins, mxnCoinsOffset),
+      renderDenominationSection("Arqueo USD", "USD", usdRows, usdOffset)
+    );
+  }
+
+  function renderAdjustments() {
+    adjustmentAmountEls.length = 0;
+    adjustmentDirectionEls.length = 0;
+    adjustmentEffectEls.length = 0;
+
+    const rows = CASH_ADJUSTMENT_ORDER.map((adjustmentType, index) => {
+      const row = draft.adjustment_lines[index];
+      const meta = CASH_ADJUSTMENT_META[adjustmentType];
+      const amountInput = createInput("number", row.amount, {
+        min: "0",
+        step: "0.01",
+        inputmode: "decimal",
+        placeholder: meta?.syncFromRefunds ? "Se toma del POS" : "0.00",
+      });
+      const directionInput = createSelect(
+        [
+          { value: "entrada", label: "Entrada" },
+          { value: "salida", label: "Salida" },
+        ],
+        row.direction || meta?.defaultDirection || "entrada"
+      );
+      const supportInput = createInput("text", row.support_reference, { placeholder: "Soporte / referencia" });
+      const noteInput = createInput("text", row.note, { placeholder: "Observacion" });
+      const effectValue = h("div", { class: "mono muted", text: meta?.affectsCash ? fmtMoney(0) : "No entra a efectivo" });
+
+      amountInput.addEventListener("input", () => {
+        clearCashFlash();
+        row.amount = amountInput.value;
+        refreshComputed();
+      });
+      directionInput.addEventListener("change", () => {
+        clearCashFlash();
+        row.direction = directionInput.value;
+        refreshComputed();
+      });
+      supportInput.addEventListener("input", () => {
+        clearCashFlash();
+        row.support_reference = supportInput.value;
+      });
+      noteInput.addEventListener("input", () => {
+        clearCashFlash();
+        row.note = noteInput.value;
+      });
+
+      adjustmentAmountEls[index] = amountInput;
+      adjustmentDirectionEls[index] = directionInput;
+      adjustmentEffectEls[index] = effectValue;
+
+      return h("div", { class: "cash-adjustment-grid" }, [
+        h("div", { class: "col", style: "gap: 4px" }, [
+          h("div", { style: "font-weight: 680", text: cashAdjustmentLabel(adjustmentType) }),
+          h("div", {
+            class: "muted",
+            text:
+              adjustmentType === "transferencia_identificada"
+                ? "Se registra para control, pero no aumenta el efectivo esperado."
+                : adjustmentType === "reembolso_dia"
+                  ? "Se toma automáticamente del POS y descuenta efectivo."
+                  : adjustmentType === "fondo_inicial"
+                    ? "Normalmente fijo en 1000.00 MXN."
+                    : "El sistema aplica el signo según el concepto o dirección.",
+          }),
+        ]),
+        amountInput,
+        directionInput,
+        supportInput,
+        noteInput,
+        h("div", { class: "cash-inline-box" }, [effectValue]),
+      ]);
+    });
+
+    adjustmentsWrap.replaceChildren(
+      h("div", { class: "muted", text: "Captura solo el importe. El sistema calcula automáticamente el efecto en efectivo según el concepto." }),
+      h("div", { class: "cash-adjustment-grid cash-adjustment-grid-head muted mono" }, [
+        h("div", { text: "Concepto" }),
+        h("div", { text: "Importe" }),
+        h("div", { text: "Direccion" }),
+        h("div", { text: "Soporte" }),
+        h("div", { text: "Observacion" }),
+        h("div", { text: "Efecto" }),
+      ]),
+      ...rows
+    );
+  }
+
+  function buildSummaryCard(key, label) {
+    const labelEl = h("div", { class: "cash-summary-label", text: label });
+    const valueEl = h("div", { class: "cash-summary-value mono", text: "--" });
+    summaryRefs[key] = { label: labelEl, value: valueEl };
+    return h("div", { class: "card cash-summary-card" }, [labelEl, valueEl]);
+  }
+
+  function renderListCards(rows) {
+    if (!managerMode) return;
+    if (!rows.length) {
+      listWrap.replaceChildren(notice("warn", "Aún no hay cortes guardados para este filtro."));
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const row of rows) {
+      const differenceKind = cashDifferenceKind(row.difference_amount);
+      const card = h("div", {
+        class: "card col movement-card no-print",
+        role: "button",
+        tabindex: "0",
+        onclick: () => {
+          void loadDetail(row.id);
+        },
+        onkeydown: (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          void loadDetail(row.id);
+        },
+      }, [
+        h("div", { class: "row-wrap" }, [
+          h("div", { class: "col", style: "gap: 4px" }, [
+            h("div", { style: "font-weight: 760", text: cashCutShortId(row) }),
+            h("div", {
+              class: "muted",
+              text: [
+                row.business_date,
+                row.cut_type || CASH_DEFAULT_CUT_TYPE,
+                row.cashier_employee_id ? employeeName(row.cashier_employee_id) : "Sin cajero",
+              ].join(" | "),
+            }),
+            h("div", {
+              class: `mono ${differenceKind === "error" ? "delta-neg" : differenceKind === "warn" ? "cash-diff-warn" : "muted"}`,
+              text: cashDifferenceText(row.difference_amount),
+            }),
+          ]),
+          h("div", { class: "spacer" }),
+          h(
+            "button",
+            {
+              class: "btn btn-primary",
+              type: "button",
+              onclick: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void loadDetail(row.id);
+              },
+            },
+            ["Ver"]
+          ),
+        ]),
+        h("div", {
+          class: "muted",
+          text: `Fisico ${fmtMoney(row.total_counted_cash_amount)} | Esperado ${fmtMoney(row.expected_cash_amount)} | Transferencias ${fmtSignedMoney(row.identified_transfers_amount)}`,
+        }),
+      ]);
+      fragment.appendChild(card);
+    }
+    listWrap.replaceChildren(fragment);
+  }
+
+  function renderDetail(detail) {
+    if (!managerMode || !detailCard) return;
+    const { cut, productLines, denominationLines, adjustments } = detail;
+    const bills = denominationLines.filter((row) => row.currency === "MXN" && row.kind === "bill");
+    const coins = denominationLines.filter((row) => row.currency === "MXN" && row.kind === "coin");
+    const usd = denominationLines.filter((row) => row.currency === "USD");
+    const differenceTone = cashDifferenceKind(cut.difference_amount);
+
+    const generalTable = h("table", { class: "table" }, [
+      h("tbody", {}, [
+        h("tr", {}, [h("th", { text: "Sucursal" }), h("td", { text: cut.branch_name || "-" }), h("th", { text: "Tipo de corte" }), h("td", { text: cut.cut_type || CASH_DEFAULT_CUT_TYPE })]),
+        h("tr", {}, [h("th", { text: "Folio corte" }), h("td", { text: cut.cut_folio || cashCutShortId(cut) }), h("th", { text: "Fecha del negocio" }), h("td", { text: cut.business_date || "-" })]),
+        h("tr", {}, [h("th", { text: "Inicio" }), h("td", { text: formatOccurredAt(cut.started_at) }), h("th", { text: "Fin" }), h("td", { text: formatOccurredAt(cut.ended_at) })]),
+        h("tr", {}, [h("th", { text: "Cajero sistema" }), h("td", { text: cut.cashier_system_name || "-" }), h("th", { text: "Empleado" }), h("td", { text: cut.cashier_employee_id ? employeeName(cut.cashier_employee_id) : "-" })]),
+        h("tr", {}, [h("th", { text: "Clientes atendidos" }), h("td", { text: cut.customers_served != null ? String(cut.customers_served) : "-" }), h("th", { text: "Folios tickets" }), h("td", { text: `${cut.ticket_start_folio || "-"} -> ${cut.ticket_end_folio || "-"}` })]),
+        h("tr", {}, [h("th", { text: "Entregado por" }), h("td", { text: cut.delivered_by || "-" }), h("th", { text: "Recibido por" }), h("td", { text: cut.received_by || "-" })]),
+        h("tr", {}, [h("th", { text: "Observaciones" }), h("td", { colspan: "3", text: cut.observations || "-" })]),
+      ]),
+    ]);
+
+    const posTable = h("table", { class: "table" }, [
+      h("tbody", {}, [
+        h("tr", {}, [h("th", { text: "Factura global / venta" }), h("td", { text: fmtMoney(cut.invoice_sale_amount) }), h("th", { text: "Suma de recibos contado" }), h("td", { text: fmtMoney(cut.cash_receipts_amount) })]),
+        h("tr", {}, [h("th", { text: "Reembolso recibos" }), h("td", { text: fmtMoney(cut.refund_receipts_amount) }), h("th", { text: "Venta neta de contado" }), h("td", { text: fmtMoney(cut.net_cash_sales_amount) })]),
+        h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dolar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
+        h("tr", {}, [h("th", { text: "Tipo de cambio" }), h("td", { text: Number(cut.exchange_rate || 0).toFixed(4) }), h("th", { text: "Ventas dolar en MXN" }), h("td", { text: fmtMoney(cut.sales_usd_mxn_amount) })]),
+        h("tr", {}, [h("th", { text: "IVA 0%" }), h("td", { text: fmtMoney(cut.iva_zero_amount) }), h("th", { text: "Total del ticket" }), h("td", { text: fmtMoney(cut.ticket_total_amount) })]),
+      ]),
+    ]);
+
+    const productTable = h("table", { class: "table" }, [
+      h("thead", {}, [h("tr", {}, [h("th", { text: "Producto" }), h("th", { text: "Importe" }), h("th", { text: "Participacion" }), h("th", { text: "Notas" })])]),
+      h(
+        "tbody",
+        {},
+        (productLines.length ? productLines : [{ product_label: "-", amount: 0, note: "" }]).map((row) =>
+          h("tr", {}, [
+            h("td", { text: row.product_label || "-" }),
+            h("td", { class: "mono", text: fmtMoney(row.amount) }),
+            h("td", {
+              class: "mono",
+              text:
+                Number(cut.ticket_total_amount || 0) > 0
+                  ? `${((Number(row.amount || 0) / Number(cut.ticket_total_amount || 0)) * 100).toFixed(1)}%`
+                  : "0.0%",
+            }),
+            h("td", { text: row.note || "-" }),
+          ])
+        )
+      ),
+    ]);
+
+    function denominationTable(rows, currencyLabel) {
+      return h("table", { class: "table" }, [
+        h("thead", {}, [h("tr", {}, [h("th", { text: currencyLabel }), h("th", { text: "Cantidad" }), h("th", { text: "Total" })])]),
+        h(
+          "tbody",
+          {},
+          rows.map((row) =>
+            h("tr", {}, [
+              h("td", { class: "mono", text: row.currency === "USD" ? fmtMoney(row.denomination, "USD") : fmtMoney(row.denomination) }),
+              h("td", { class: "mono", text: String(row.quantity || 0) }),
+              h("td", { class: "mono", text: fmtMoney(row.line_total, row.currency) }),
+            ])
+          )
+        ),
+      ]);
+    }
+
+    const adjustmentsTable = h("table", { class: "table" }, [
+      h("thead", {}, [h("tr", {}, [h("th", { text: "Concepto" }), h("th", { text: "Importe capturado" }), h("th", { text: "Efecto" }), h("th", { text: "Soporte" }), h("th", { text: "Observacion" })])]),
+      h(
+        "tbody",
+        {},
+        adjustments.map((row) =>
+          h("tr", {}, [
+            h("td", { text: cashAdjustmentLabel(row.adjustment_type) }),
+            h("td", { class: "mono", text: fmtMoney(row.amount) }),
+            h("td", {
+              class: `mono ${row.affects_cash ? (Number(row.signed_amount || 0) < 0 ? "delta-neg" : "delta-pos") : "muted"}`,
+              text: row.affects_cash ? fmtSignedMoney(row.signed_amount) : "No entra a efectivo",
+            }),
+            h("td", { text: row.support_reference || "-" }),
+            h("td", { text: row.note || "-" }),
+          ])
+        )
+      ),
+    ]);
+
+    const summary = h("div", { class: "cash-report-summary" }, [
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Efectivo contado MXN" }), h("strong", { class: "mono", text: fmtMoney(Number(cut.total_mxn_bills_amount || 0) + Number(cut.total_mxn_coins_amount || 0)) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado (USD)" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_amount, "USD") })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado en MXN" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_mxn_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total fisico contado" }), h("strong", { class: "mono", text: fmtMoney(cut.total_counted_cash_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado en efectivo" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Ajustes / otros movimientos" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.total_cash_adjustments_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Transferencias identificadas" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.identified_transfers_amount) })]),
+      h("div", { class: `cash-report-summary-row cash-report-diff cash-diff-${differenceTone}` }, [h("span", { text: "Diferencia (sobrante/faltante)" }), h("strong", { class: "mono", text: cashDifferenceText(cut.difference_amount) })]),
+    ]);
+
+    detailTitle.textContent = `Reporte imprimible | ${cashCutShortId(cut)}`;
+    detailMsg.replaceChildren(
+      h("div", { class: "cash-printable" }, [
+        h("div", { class: "cash-print-header" }, [
+          h("div", { class: "h1", text: "REPORTE DE CORTE DE CAJA Y ARQUEO DE EFECTIVO" }),
+          h("div", { class: "muted", text: `${APP_NAME} | ${cashCutShortId(cut)} | Generado ${new Date().toLocaleString()}` }),
+        ]),
+        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos generales del corte" }), tableScroll(generalTable)]),
+        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable)]),
+        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Desglose de venta por producto" }), tableScroll(productTable)]),
+        h("div", { class: "cash-denomination-grid" }, [
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Billetes" }), tableScroll(denominationTable(bills, "Billete"))]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Monedas" }), tableScroll(denominationTable(coins, "Moneda"))]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo USD" }), tableScroll(denominationTable(usd, "Denominacion"))]),
+        ]),
+        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Controles adicionales del cajero" }), tableScroll(adjustmentsTable)]),
+        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica" }), summary]),
+        h("div", { class: "cash-signatures" }, [
+          h("div", { class: "cash-signature-line" }, [h("span", { text: "Entregado por" }), h("strong", { text: cut.delivered_by || "-" })]),
+          h("div", { class: "cash-signature-line" }, [h("span", { text: "Recibido por" }), h("strong", { text: cut.received_by || "-" })]),
+        ]),
+      ])
+    );
+  }
+
+  async function loadList() {
+    if (!managerMode || loadingList || !isActive()) return;
+    loadingList = true;
+    listMsg.replaceChildren(notice("warn", "Cargando cortes..."));
+    try {
+      let query = supabase
+        .from("cash_cuts")
+        .select("id,business_date,daily_sequence,cut_type,cashier_employee_id,total_counted_cash_amount,expected_cash_amount,difference_amount,identified_transfers_amount,status,created_at")
+        .order("business_date", { ascending: false })
+        .order("daily_sequence", { ascending: false })
+        .limit(CASH_LIST_PAGE_SIZE);
+
+      const businessDate = trimmedOrEmpty(state.cashFilters.business_date);
+      const cashierEmployeeId = trimmedOrEmpty(state.cashFilters.cashier_employee_id);
+      if (businessDate) query = query.eq("business_date", businessDate);
+      if (cashierEmployeeId) query = query.eq("cashier_employee_id", cashierEmployeeId);
+
+      const { data, error } = await query;
+      if (!isActive()) return;
+      if (error) {
+        listMsg.replaceChildren(notice("error", error.message));
+        return;
+      }
+      listRows = data || [];
+      listMsg.replaceChildren();
+      renderListCards(listRows);
+    } finally {
+      loadingList = false;
+    }
+  }
+
+  async function loadDetail(cashCutId) {
+    if (!managerMode || loadingDetail || !cashCutId || !isActive()) return;
+    loadingDetail = true;
+    detailTitle.textContent = "Reporte imprimible";
+    detailMsg.replaceChildren(notice("warn", "Cargando reporte..."));
+    state.cashSelectedId = cashCutId;
+    try {
+      const [
+        { data: cut, error: cutError },
+        { data: productLines, error: productError },
+        { data: denominationLines, error: denominationError },
+        { data: adjustmentLines, error: adjustmentError },
+      ] = await Promise.all([
+        supabase.from("cash_cuts").select("*").eq("id", cashCutId).single(),
+        supabase.from("cash_cut_product_lines").select("*").eq("cash_cut_id", cashCutId).order("sort_order"),
+        supabase.from("cash_cut_denominations").select("*").eq("cash_cut_id", cashCutId).order("sort_order"),
+        supabase.from("cash_cut_adjustments").select("*").eq("cash_cut_id", cashCutId).order("sort_order"),
+      ]);
+      if (!isActive()) return;
+      if (cutError) throw cutError;
+      if (productError) throw productError;
+      if (denominationError) throw denominationError;
+      if (adjustmentError) throw adjustmentError;
+
+      renderDetail({
+        cut,
+        productLines: productLines || [],
+        denominationLines: denominationLines || [],
+        adjustments: adjustmentLines || [],
+      });
+    } catch (error) {
+      if (!isActive()) return;
+      detailMsg.replaceChildren(notice("error", error?.message ? String(error.message) : "No se pudo cargar el reporte."));
+    } finally {
+      loadingDetail = false;
+    }
+  }
+
+  async function submitCashCut() {
+    if (state.cashSubmitting || !isActive()) return;
+    clearCashFlash();
+    const startedAtIso = isoFromLocalInput(draft.started_at);
+    const endedAtIso = isoFromLocalInput(draft.ended_at);
+    if (!trimmedOrEmpty(draft.business_date)) {
+      showCashFormNotice("error", "Selecciona la fecha del dia que estás cerrando.");
+      return;
+    }
+    if (!startedAtIso || !endedAtIso) {
+      showCashFormNotice("error", "Captura inicio y fin del corte.");
+      return;
+    }
+    if (!employeeMode && !trimmedOrEmpty(draft.cashier_employee_id)) {
+      showCashFormNotice("error", "Selecciona el empleado/cajero del corte.");
+      return;
+    }
+
+    const computed = refreshComputed();
+    state.cashSubmitting = true;
+    showCashFormNotice("warn", "Guardando Corte Z...");
+    try {
+      const productLines = computed.productLines
+        .filter((row) => row.product_label || row.amount > 0 || row.note)
+        .map((row) => ({
+          product_label: row.product_label,
+          amount: row.amount,
+          note: row.note || null,
+        }));
+      const denominationLines = computed.denominationLines.map((row) => ({
+        currency: row.currency,
+        kind: row.kind,
+        denomination: row.denomination,
+        quantity: row.quantity,
+      }));
+      const adjustmentLines = computed.adjustments.map((row) => ({
+        adjustment_type: row.adjustment_type,
+        direction: row.fixed_sign === "direction" ? row.direction : null,
+        amount: row.amount,
+        support_reference: row.support_reference || null,
+        note: row.note || null,
+      }));
+      const cutPayload = {
+        business_date: draft.business_date,
+        branch_name: trimmedOrEmpty(draft.branch_name) || CASH_DEFAULT_BRANCH,
+        cut_type: trimmedOrEmpty(draft.cut_type) || CASH_DEFAULT_CUT_TYPE,
+        cut_folio: trimmedOrEmpty(draft.cut_folio) || null,
+        started_at: startedAtIso,
+        ended_at: endedAtIso,
+        cashier_employee_id: trimmedOrEmpty(draft.cashier_employee_id) || null,
+        cashier_system_name: trimmedOrEmpty(draft.cashier_system_name) || null,
+        customers_served: trimmedOrEmpty(draft.customers_served) ? integerFromInput(draft.customers_served, 0) : null,
+        ticket_start_folio: trimmedOrEmpty(draft.ticket_start_folio) || null,
+        ticket_end_folio: trimmedOrEmpty(draft.ticket_end_folio) || null,
+        delivered_by: trimmedOrEmpty(draft.delivered_by) || null,
+        received_by: trimmedOrEmpty(draft.received_by) || null,
+        observations: trimmedOrEmpty(draft.observations) || null,
+        invoice_sale_amount: computed.invoiceSaleAmount,
+        cash_receipts_amount: computed.cashReceiptsAmount,
+        refund_receipts_amount: computed.refundReceiptsAmount,
+        net_cash_sales_amount: computed.netCashSalesAmount,
+        sales_mxn_amount: computed.salesMxnAmount,
+        sales_usd_amount: computed.salesUsdAmount,
+        exchange_rate: computed.exchangeRate,
+        iva_zero_amount: computed.ivaZeroAmount,
+        ticket_total_amount: computed.ticketTotalAmount,
+      };
+
+      const { data, error } = await supabase.rpc("create_cash_cut", {
+        cut: cutPayload,
+        product_lines: productLines,
+        denomination_lines: denominationLines,
+        adjustment_lines: adjustmentLines,
+      });
+      if (error) throw error;
+
+      const created = data && typeof data === "object" ? data : {};
+      const cutRef = cashCutShortId(created.business_date || draft.business_date, created.daily_sequence);
+      state.cashFlashNotice = {
+        kind: "ok",
+        text: `Guardado: ${cutRef} | ${cashDifferenceText(computed.differenceAmount)}`,
+      };
+      resetCashDraft();
+      if (managerMode && created.id) {
+        state.cashSelectedId = created.id;
+      }
+      scheduleSafeRender();
+    } catch (error) {
+      showCashFormNotice("error", normalizeCashCutError(error?.message || error));
+    } finally {
+      state.cashSubmitting = false;
+    }
+  }
+
+  function bindDraftInput(input, key, { refresh = false } = {}) {
+    input.addEventListener("input", () => {
+      clearCashFlash();
+      draft[key] = input.value;
+      if (refresh) refreshComputed();
+    });
+  }
+
+  bindDraftInput(businessDateInput, "business_date");
+  bindDraftInput(branchNameInput, "branch_name");
+  bindDraftInput(cutTypeInput, "cut_type");
+  bindDraftInput(cutFolioInput, "cut_folio");
+  bindDraftInput(startedAtInput, "started_at");
+  bindDraftInput(endedAtInput, "ended_at");
+  bindDraftInput(cashierSystemInput, "cashier_system_name");
+  bindDraftInput(customersServedInput, "customers_served");
+  bindDraftInput(ticketStartFolioInput, "ticket_start_folio");
+  bindDraftInput(ticketEndFolioInput, "ticket_end_folio");
+  bindDraftInput(deliveredByInput, "delivered_by");
+  bindDraftInput(receivedByInput, "received_by");
+  observationsInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.observations = observationsInput.value;
+  });
+
+  invoiceSaleInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.invoice_sale_amount = invoiceSaleInput.value;
+  });
+  cashReceiptsInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.cash_receipts_amount = cashReceiptsInput.value;
+    refreshComputed();
+  });
+  refundReceiptsInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.refund_receipts_amount = refundReceiptsInput.value;
+    refreshComputed();
+  });
+  salesMxnInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.sales_mxn_amount = salesMxnInput.value;
+  });
+  salesUsdInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.sales_usd_amount = salesUsdInput.value;
+    refreshComputed();
+  });
+  exchangeRateInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.exchange_rate = exchangeRateInput.value;
+    refreshComputed();
+  });
+  ivaZeroInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.iva_zero_amount = ivaZeroInput.value;
+  });
+  ticketTotalInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.ticket_total_amount = ticketTotalInput.value;
+    refreshComputed();
+  });
+  if (!employeeMode && cashierInput instanceof HTMLSelectElement) {
+    cashierInput.addEventListener("change", () => {
+      clearCashFlash();
+      draft.cashier_employee_id = cashierInput.value;
+    });
+  }
+
+  listBusinessDateInput.addEventListener("input", () => {
+    state.cashFilters.business_date = listBusinessDateInput.value;
+  });
+  listCashierInput.addEventListener("change", () => {
+    state.cashFilters.cashier_employee_id = listCashierInput.value;
+  });
+
+  const submitBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      onclick: () => {
+        void submitCashCut();
+      },
+    },
+    ["Guardar Corte Z"]
+  );
+
+  const resetBtn = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      type: "button",
+      onclick: () => {
+        resetCashDraft();
+        state.cashFlashNotice = null;
+        scheduleSafeRender();
+      },
+    },
+    ["Limpiar formulario"]
+  );
+
+  const formCard = h("div", { class: "card col no-print" }, [
+    h("div", { class: "h1", text: "Corte Z" }),
+    h("div", { class: "muted", text: employeeMode ? "Captura el cierre del día y envíalo una sola vez." : "Puedes capturar, revisar e imprimir cierres de caja desde aquí." }),
+    formMsg,
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Datos generales del corte" }),
+    h("div", { class: "grid3" }, [field("Fecha del negocio", businessDateInput), field("Sucursal", branchNameInput), field("Tipo de corte", cutTypeInput)]),
+    h("div", { class: "grid3" }, [field("Folio corte", cutFolioInput), field("Inicio corte", startedAtInput), field("Fin corte", endedAtInput)]),
+    h("div", { class: "grid3" }, [employeeMode ? field("Empleado", cashierInput) : field("Empleado / Cajero", cashierInput), field("Cajero sistema", cashierSystemInput), field("Clientes atendidos", customersServedInput)]),
+    h("div", { class: "grid3" }, [field("Folio inicio tickets", ticketStartFolioInput), field("Folio fin tickets", ticketEndFolioInput), field("Entregado por", deliveredByInput)]),
+    h("div", { class: "grid2" }, [field("Recibido por", receivedByInput), field("Observaciones", observationsInput)]),
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Datos del ticket POS" }),
+    h("div", { class: "grid3" }, [field("Factura global / venta", invoiceSaleInput), field("Suma de recibos contado", cashReceiptsInput), field("Reembolso recibos", refundReceiptsInput)]),
+    h("div", { class: "grid3" }, [field("Venta neta de contado", netCashSalesInput), field("Ventas moneda nacional", salesMxnInput), field("Ventas dolar (USD)", salesUsdInput)]),
+    h("div", { class: "grid3" }, [field("Tipo de cambio", exchangeRateInput), field("Ventas dolar en MXN", salesUsdMxnInput), field("IVA 0%", ivaZeroInput)]),
+    field("Total del ticket", ticketTotalInput),
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Desglose de venta por producto" }),
+    productRowsWrap,
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Arqueo fisico" }),
+    denominationWrap,
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Controles adicionales del cajero" }),
+    adjustmentsWrap,
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Conciliacion automatica" }),
+    summaryWrap,
+    h("div", { class: "row-wrap" }, [submitBtn, resetBtn]),
+  ]);
+
+  const managerListCard = managerMode
+    ? h("div", { class: "card col no-print" }, [
+        h("div", { class: "row-wrap" }, [
+          h("div", { class: "h1", text: "Cortes guardados" }),
+          h("div", { class: "spacer" }),
+          h(
+            "button",
+            {
+              class: "btn",
+              type: "button",
+              onclick: () => {
+                void loadList();
+              },
+            },
+            ["Actualizar"]
+          ),
+        ]),
+        h("div", { class: "grid2" }, [field("Filtrar por fecha", listBusinessDateInput), field("Filtrar por empleado", listCashierInput)]),
+        listMsg,
+        listWrap,
+      ])
+    : null;
+
+  const pageChildren = [formCard];
+  if (managerListCard) pageChildren.push(managerListCard);
+  if (detailCard) {
+    detailMsg.replaceChildren(notice("warn", "Elige un corte para revisar o imprimir."));
+    pageChildren.push(detailCard);
+  }
+
+  const page = h("div", { class: "col" }, pageChildren);
+
+  renderProductRows();
+  renderDenominations();
+  renderAdjustments();
+  summaryWrap.replaceChildren(
+    buildSummaryCard("countedMxn", "Efectivo contado MXN"),
+    buildSummaryCard("countedUsd", "USD contado"),
+    buildSummaryCard("countedUsdMxn", "USD contado en MXN"),
+    buildSummaryCard("physicalTotal", "Total fisico contado"),
+    buildSummaryCard("expectedCash", "Esperado en efectivo"),
+    buildSummaryCard("adjustments", "Ajustes que afectan efectivo"),
+    buildSummaryCard("transfers", "Transferencias identificadas"),
+    buildSummaryCard("difference", "Diferencia")
+  );
+  showStoredCashNotice();
+  refreshComputed();
+  layout(ROUTE_TITLES.cash, page);
+
+  if (managerMode) {
+    await loadList();
+    if (state.cashSelectedId) {
+      await loadDetail(state.cashSelectedId);
+    }
+  }
+}
+
 async function pageSettings(pageCtx) {
   const isActive = () => isPageContextActive(pageCtx);
   const msg = h("div");
@@ -6325,6 +7710,7 @@ async function render() {
   const pageCtx = createPageContext(r);
 
   if (r === "capture") return pageCapture(pageCtx);
+  if (r === "cash") return pageCash(pageCtx);
   if (r === "movements") return pageMovements(pageCtx);
   if (r === "inventory") return pageInventory(pageCtx);
   if (r === "hypothetical") return pageHypothetical(pageCtx);
