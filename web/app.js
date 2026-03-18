@@ -6003,6 +6003,7 @@ async function pageCash(pageCtx) {
     const visibleProductLines = productLines.filter((row) => row.product_label || Number(row.amount || 0) > 0 || row.note);
     const visibleAdjustments = adjustments.filter((row) => Number(row.amount || 0) > 0 || row.support_reference || row.note || row.adjustment_type === "fondo_inicial");
     const differenceTone = cashDifferenceKind(cut.difference_amount);
+    const invoicedMismatchAmount = roundMoneyValue((Number(cut.credit_invoiced_sales_amount || 0) + Number(cut.cash_invoiced_sales_amount || 0)) - Number(cut.total_invoiced_sales_amount || 0));
 
     const generalTable = h("table", { class: "table" }, [
       h("tbody", {}, [
@@ -6028,6 +6029,14 @@ async function pageCash(pageCtx) {
         h("tr", {}, [h("th", { text: "Arqueo efectivo Versatil" }), h("td", { text: fmtMoney(cut.versatil_cash_count_amount) }), h("th", { text: "Referencia de diferencia" }), h("td", { text: "Fisico contado vs Versatil" })]),
       ]),
     ]);
+
+    const posFacturadasWarning = Math.abs(invoicedMismatchAmount) >= 0.005
+      ? h("div", { class: "cash-print-warning" }, [
+          h("div", { class: "cash-print-warning-title", text: "Advertencia de control: ventas facturadas" }),
+          h("div", { class: "cash-print-warning-body", text: `Crédito + efectivo = ${fmtMoney(Number(cut.credit_invoiced_sales_amount || 0) + Number(cut.cash_invoiced_sales_amount || 0))}, pero Total de ventas facturadas = ${fmtMoney(cut.total_invoiced_sales_amount)}.` }),
+          h("div", { class: "cash-print-warning-note muted", text: "Revisa el dato antes de archivar o firmar este corte. No cambia automáticamente la diferencia vs Versatil." }),
+        ])
+      : null;
 
     const productTable = h("table", { class: "table" }, [
       h("thead", {}, [h("tr", {}, [h("th", { text: "Producto" }), h("th", { text: "Importe" }), h("th", { text: "Participacion" }), h("th", { text: "Notas" })])]),
@@ -6122,7 +6131,7 @@ async function pageCash(pageCtx) {
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica vs Versatil" }), summary]),
         ]),
         h("div", { class: "cash-print-grid cash-print-grid-2" }, [
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable)]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable), posFacturadasWarning].filter(Boolean)),
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Controles adicionales del cajero" }), tableScroll(adjustmentsTable)]),
         ]),
         h("div", { class: "cash-print-grid cash-print-grid-3" }, [

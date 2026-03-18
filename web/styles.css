@@ -698,6 +698,36 @@ textarea { min-height: 84px; resize: vertical; }
   margin-top: 4px;
 }
 
+.cash-print-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(179, 122, 0, 0.3);
+  background: linear-gradient(180deg, rgba(255, 245, 217, 0.9), rgba(255, 255, 255, 0.98));
+}
+
+.cash-print-warning-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #8b5e00;
+}
+
+.cash-print-warning-body {
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 720;
+}
+
+.cash-print-warning-note {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .cash-signature-line {
   border-top: 1px solid var(--line);
   padding-top: 10px;
@@ -946,6 +976,24 @@ textarea { min-height: 84px; resize: vertical; }
   .cash-signature-line {
     padding-top: 6px;
     gap: 3px;
+  }
+
+  .cash-print-warning {
+    margin-top: 6px;
+    padding: 6px 7px;
+    gap: 3px;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .cash-print-warning-title {
+    font-size: 8.5px;
+  }
+
+  .cash-print-warning-body,
+  .cash-print-warning-note {
+    font-size: 8.5px;
+    line-height: 1.25;
   }
 }
 
