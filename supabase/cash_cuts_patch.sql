@@ -72,6 +72,8 @@ create table if not exists public.cash_cuts (
   total_counted_cash_amount numeric(12, 2) not null default 0,
   total_cash_adjustments_amount numeric(12, 2) not null default 0,
   identified_transfers_amount numeric(12, 2) not null default 0,
+  initial_fund_amount numeric(12, 2) not null default 0,
+  versatil_cash_count_amount numeric(12, 2) not null default 0,
   expected_cash_amount numeric(12, 2) not null default 0,
   difference_amount numeric(12, 2) not null default 0,
   created_at timestamptz not null default now(),
@@ -82,6 +84,12 @@ create table if not exists public.cash_cuts (
 
 alter table public.cash_cuts
   add column if not exists workspace_id uuid references public.workspaces(id) on delete cascade;
+
+alter table public.cash_cuts
+  add column if not exists initial_fund_amount numeric(12, 2) not null default 0;
+
+alter table public.cash_cuts
+  add column if not exists versatil_cash_count_amount numeric(12, 2) not null default 0;
 
 update public.cash_cuts c
 set workspace_id = wu.workspace_id
@@ -215,6 +223,8 @@ declare
   v_total_counted_cash_amount numeric(12, 2) := 0;
   v_total_cash_adjustments_amount numeric(12, 2) := 0;
   v_identified_transfers_amount numeric(12, 2) := 0;
+  v_initial_fund_amount numeric(12, 2) := 0;
+  v_versatil_cash_count_amount numeric(12, 2) := 0;
   v_expected_cash_amount numeric(12, 2) := 0;
   v_difference_amount numeric(12, 2) := 0;
   v_entry jsonb;
@@ -307,6 +317,7 @@ begin
   v_sales_usd_amount := coalesce(nullif(cut->>'sales_usd_amount', '')::numeric, 0);
   v_iva_zero_amount := coalesce(nullif(cut->>'iva_zero_amount', '')::numeric, 0);
   v_ticket_total_amount := coalesce(nullif(cut->>'ticket_total_amount', '')::numeric, 0);
+  v_versatil_cash_count_amount := coalesce(nullif(cut->>'versatil_cash_count_amount', '')::numeric, 0);
   v_sales_usd_mxn_amount := round(v_sales_usd_amount * v_exchange_rate, 2);
 
   perform pg_advisory_xact_lock(hashtext(concat('cash_cut:', v_actor_workspace_id::text, ':', v_business_date::text)));
@@ -347,7 +358,8 @@ begin
     exchange_rate,
     sales_usd_mxn_amount,
     iva_zero_amount,
-    ticket_total_amount
+    ticket_total_amount,
+    versatil_cash_count_amount
   ) values (
     v_cut_id,
     v_actor_workspace_id,
@@ -378,7 +390,8 @@ begin
     v_exchange_rate,
     v_sales_usd_mxn_amount,
     v_iva_zero_amount,
-    v_ticket_total_amount
+    v_ticket_total_amount,
+    v_versatil_cash_count_amount
   );
 
   v_sort_order := 0;
@@ -491,8 +504,9 @@ begin
 
     case v_adjustment_type
       when 'fondo_inicial' then
-        v_affects_cash := true;
+        v_affects_cash := false;
         v_signed_amount := v_amount;
+        v_initial_fund_amount := v_amount;
       when 'reembolso_dia' then
         v_affects_cash := true;
         v_signed_amount := -v_amount;
@@ -542,7 +556,9 @@ begin
       v_adjustment_note
     );
 
-    if v_affects_cash then
+    if v_adjustment_type = 'fondo_inicial' then
+      null;
+    elsif v_affects_cash then
       v_total_cash_adjustments_amount := v_total_cash_adjustments_amount + v_signed_amount;
     else
       v_identified_transfers_amount := v_identified_transfers_amount + v_signed_amount;
@@ -550,7 +566,7 @@ begin
   end loop;
 
   v_expected_cash_amount := round(v_net_cash_sales_amount + v_total_cash_adjustments_amount, 2);
-  v_difference_amount := round(v_total_counted_cash_amount - v_expected_cash_amount, 2);
+  v_difference_amount := round((v_total_counted_cash_amount - v_initial_fund_amount) - v_versatil_cash_count_amount, 2);
 
   update public.cash_cuts
   set
@@ -561,6 +577,8 @@ begin
     total_counted_cash_amount = v_total_counted_cash_amount,
     total_cash_adjustments_amount = round(v_total_cash_adjustments_amount, 2),
     identified_transfers_amount = round(v_identified_transfers_amount, 2),
+    initial_fund_amount = round(v_initial_fund_amount, 2),
+    versatil_cash_count_amount = round(v_versatil_cash_count_amount, 2),
     expected_cash_amount = v_expected_cash_amount,
     difference_amount = v_difference_amount
   where id = v_cut_id;

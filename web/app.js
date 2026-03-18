@@ -57,7 +57,7 @@ const CASH_USD_DENOMS = [100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
 const CASH_ADJUSTMENT_META = {
   fondo_inicial: {
     label: "Fondo de caja inicial",
-    affectsCash: true,
+    affectsCash: false,
     fixedSign: "positive",
     defaultDirection: "entrada",
   },
@@ -1161,6 +1161,7 @@ function createCashCutDraft() {
     exchange_rate: CASH_DEFAULT_EXCHANGE_RATE.toFixed(2),
     iva_zero_amount: "",
     ticket_total_amount: "",
+    versatil_cash_count_amount: "",
     product_lines: Array.from({ length: CASH_PRODUCT_LINE_MIN }, () => defaultCashProductLine()),
     denomination_lines: defaultCashDenominationLines(),
     adjustment_lines: defaultCashAdjustments(),
@@ -1209,6 +1210,7 @@ function ensureCashDraft() {
   if (!trimmedOrEmpty(draft.cut_type)) draft.cut_type = CASH_DEFAULT_CUT_TYPE;
   if (!trimmedOrEmpty(draft.exchange_rate)) draft.exchange_rate = CASH_DEFAULT_EXCHANGE_RATE.toFixed(2);
   if (!trimmedOrEmpty(draft.branch_name)) draft.branch_name = CASH_DEFAULT_BRANCH;
+  if (draft.versatil_cash_count_amount == null) draft.versatil_cash_count_amount = "";
   if (!trimmedOrEmpty(draft.started_at)) draft.started_at = localNowInputValue();
   if (!trimmedOrEmpty(draft.ended_at)) draft.ended_at = draft.started_at;
 
@@ -1228,6 +1230,7 @@ function computeCashCutDraft(draft) {
   const salesUsdAmount = roundMoneyValue(numberFromInput(safeDraft.sales_usd_amount, 0));
   const salesUsdMxnAmount = roundMoneyValue(salesUsdAmount * exchangeRate);
   const ticketTotalAmount = roundMoneyValue(numberFromInput(safeDraft.ticket_total_amount, 0));
+  const versatilCashCountAmount = roundMoneyValue(numberFromInput(safeDraft.versatil_cash_count_amount, 0));
 
   const productLines = (safeDraft.product_lines || []).map((row) => {
     const amount = roundMoneyValue(numberFromInput(row?.amount, 0));
@@ -1268,6 +1271,7 @@ function computeCashCutDraft(draft) {
 
   let totalCashAdjustmentsAmount = 0;
   let identifiedTransfersAmount = 0;
+  let initialFundAmount = 0;
   const adjustments = CASH_ADJUSTMENT_ORDER.map((type) => {
     const meta = CASH_ADJUSTMENT_META[type];
     const row = (safeDraft.adjustment_lines || []).find((item) => item?.adjustment_type === type) || {};
@@ -1278,7 +1282,8 @@ function computeCashCutDraft(draft) {
     else if (meta?.fixedSign === "direction") signedAmount = direction === "salida" ? -rawAmount : rawAmount;
     else signedAmount = rawAmount;
     signedAmount = roundMoneyValue(signedAmount);
-    if (meta?.affectsCash) totalCashAdjustmentsAmount += signedAmount;
+    if (type === "fondo_inicial") initialFundAmount = rawAmount;
+    else if (meta?.affectsCash) totalCashAdjustmentsAmount += signedAmount;
     else identifiedTransfersAmount += signedAmount;
     return {
       adjustment_type: type,
@@ -1294,11 +1299,13 @@ function computeCashCutDraft(draft) {
     };
   });
 
+  initialFundAmount = roundMoneyValue(initialFundAmount);
   totalCashAdjustmentsAmount = roundMoneyValue(totalCashAdjustmentsAmount);
   identifiedTransfersAmount = roundMoneyValue(identifiedTransfersAmount);
 
   const expectedCashAmount = roundMoneyValue(netCashSalesAmount + totalCashAdjustmentsAmount);
-  const differenceAmount = roundMoneyValue(totalCountedCashAmount - expectedCashAmount);
+  const comparableCountedCashAmount = roundMoneyValue(totalCountedCashAmount - initialFundAmount);
+  const differenceAmount = roundMoneyValue(comparableCountedCashAmount - versatilCashCountAmount);
 
   return {
     exchangeRate,
@@ -1311,6 +1318,7 @@ function computeCashCutDraft(draft) {
     salesUsdMxnAmount,
     ivaZeroAmount: roundMoneyValue(numberFromInput(safeDraft.iva_zero_amount, 0)),
     ticketTotalAmount,
+    versatilCashCountAmount,
     productLines,
     denominationLines,
     adjustments,
@@ -1319,6 +1327,8 @@ function computeCashCutDraft(draft) {
     totalUsdAmount: roundMoneyValue(totalUsdAmount),
     totalUsdMxnAmount,
     totalCountedCashAmount,
+    initialFundAmount,
+    comparableCountedCashAmount,
     totalCashAdjustmentsAmount,
     identifiedTransfersAmount,
     expectedCashAmount,
@@ -1371,6 +1381,21 @@ function cashDifferenceText(value) {
   const amount = roundMoneyValue(value);
   if (Math.abs(amount) < 0.005) return "Sin diferencia";
   return amount > 0 ? `Sobrante ${fmtMoney(amount)}` : `Faltante ${fmtMoney(Math.abs(amount))}`;
+}
+
+function cashComparableCountedAmount(source) {
+  return roundMoneyValue(Number(source?.total_counted_cash_amount || 0) - Number(source?.initial_fund_amount || 0));
+}
+
+function cashAdjustmentEffectText(row) {
+  if (row?.adjustment_type === "fondo_inicial") return "Base fija / no afecta diferencia";
+  if (!row?.affects_cash) return "No entra a efectivo";
+  return fmtSignedMoney(row.signed_amount);
+}
+
+function cashAdjustmentEffectClass(row) {
+  if (!row?.affects_cash) return "mono muted";
+  return `mono ${Number(row?.signed_amount || 0) < 0 ? "delta-neg" : "delta-pos"}`;
 }
 
 async function loadSession() {
@@ -5560,6 +5585,7 @@ async function pageCash(pageCtx) {
   const salesUsdMxnInput = createInput("text", "", { readonly: "true" });
   const ivaZeroInput = createInput("number", draft.iva_zero_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const ticketTotalInput = createInput("number", draft.ticket_total_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const versatilCashCountInput = createInput("number", draft.versatil_cash_count_amount, { min: "0", step: "0.01", inputmode: "decimal" });
 
   const listBusinessDateInput = createInput("date", state.cashFilters.business_date || "");
   const listCashierInput = createSelect(cashierOptions, state.cashFilters.cashier_employee_id || "");
@@ -5621,8 +5647,8 @@ async function pageCash(pageCtx) {
         directionEl.value = row.direction || "entrada";
       }
       if (effectEl) {
-        effectEl.textContent = row.affects_cash ? fmtSignedMoney(row.signed_amount) : "No entra a efectivo";
-        effectEl.className = `mono ${row.affects_cash ? (row.signed_amount < 0 ? "delta-neg" : "delta-pos") : "muted"}`;
+        effectEl.textContent = cashAdjustmentEffectText(row);
+        effectEl.className = cashAdjustmentEffectClass(row);
       }
     });
 
@@ -5630,12 +5656,15 @@ async function pageCash(pageCtx) {
     setTextSummary("countedUsd", "USD contado", fmtMoney(computed.totalUsdAmount, "USD"));
     setTextSummary("countedUsdMxn", "USD contado en MXN", fmtMoney(computed.totalUsdMxnAmount));
     setTextSummary("physicalTotal", "Total fisico contado", fmtMoney(computed.totalCountedCashAmount));
-    setTextSummary("expectedCash", "Esperado en efectivo", fmtMoney(computed.expectedCashAmount));
+    setTextSummary("initialFund", "Fondo de caja inicial", fmtMoney(computed.initialFundAmount));
+    setTextSummary("comparablePhysical", "Fisico comparable (sin fondo)", fmtMoney(computed.comparableCountedCashAmount));
+    setTextSummary("versatilCash", "Arqueo efectivo Versatil", fmtMoney(computed.versatilCashCountAmount));
+    setTextSummary("expectedCash", "Esperado calculado", fmtMoney(computed.expectedCashAmount));
     setTextSummary("adjustments", "Ajustes que afectan efectivo", fmtSignedMoney(computed.totalCashAdjustmentsAmount));
     setTextSummary("transfers", "Transferencias identificadas", fmtSignedMoney(computed.identifiedTransfersAmount));
     setTextSummary(
       "difference",
-      "Diferencia",
+      "Diferencia vs Versatil",
       cashDifferenceText(computed.differenceAmount),
       `cash-diff-${cashDifferenceKind(computed.differenceAmount)}`
     );
@@ -5825,7 +5854,7 @@ async function pageCash(pageCtx) {
                 : adjustmentType === "reembolso_dia"
                   ? "Se toma automáticamente del POS y descuenta efectivo."
                   : adjustmentType === "fondo_inicial"
-                    ? "Normalmente fijo en 1000.00 MXN."
+                    ? "Base fija del cajon. Se excluye de la comparacion contra Versatil."
                     : "El sistema aplica el signo según el concepto o dirección.",
           }),
         ]),
@@ -5914,7 +5943,7 @@ async function pageCash(pageCtx) {
         ]),
         h("div", {
           class: "muted",
-          text: `Fisico ${fmtMoney(row.total_counted_cash_amount)} | Esperado ${fmtMoney(row.expected_cash_amount)} | Transferencias ${fmtSignedMoney(row.identified_transfers_amount)}`,
+          text: `Comparable ${fmtMoney(cashComparableCountedAmount(row))} | Versatil ${fmtMoney(row.versatil_cash_count_amount)} | Transferencias ${fmtSignedMoney(row.identified_transfers_amount)}`,
         }),
       ]);
       fragment.appendChild(card);
@@ -5949,6 +5978,7 @@ async function pageCash(pageCtx) {
         h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dolar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
         h("tr", {}, [h("th", { text: "Tipo de cambio" }), h("td", { text: Number(cut.exchange_rate || 0).toFixed(4) }), h("th", { text: "Ventas dolar en MXN" }), h("td", { text: fmtMoney(cut.sales_usd_mxn_amount) })]),
         h("tr", {}, [h("th", { text: "IVA 0%" }), h("td", { text: fmtMoney(cut.iva_zero_amount) }), h("th", { text: "Total del ticket" }), h("td", { text: fmtMoney(cut.ticket_total_amount) })]),
+        h("tr", {}, [h("th", { text: "Arqueo efectivo Versatil" }), h("td", { text: fmtMoney(cut.versatil_cash_count_amount) }), h("th", { text: "Referencia de diferencia" }), h("td", { text: "Fisico sin fondo vs Versatil" })]),
       ]),
     ]);
 
@@ -6001,8 +6031,8 @@ async function pageCash(pageCtx) {
             h("td", { text: cashAdjustmentLabel(row.adjustment_type) }),
             h("td", { class: "mono", text: fmtMoney(row.amount) }),
             h("td", {
-              class: `mono ${row.affects_cash ? (Number(row.signed_amount || 0) < 0 ? "delta-neg" : "delta-pos") : "muted"}`,
-              text: row.affects_cash ? fmtSignedMoney(row.signed_amount) : "No entra a efectivo",
+              class: cashAdjustmentEffectClass(row),
+              text: cashAdjustmentEffectText(row),
             }),
             h("td", { text: row.support_reference || "-" }),
             h("td", { text: row.note || "-" }),
@@ -6016,10 +6046,13 @@ async function pageCash(pageCtx) {
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado (USD)" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_amount, "USD") })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado en MXN" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_mxn_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total fisico contado" }), h("strong", { class: "mono", text: fmtMoney(cut.total_counted_cash_amount) })]),
-      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado en efectivo" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fondo de caja inicial" }), h("strong", { class: "mono", text: fmtMoney(cut.initial_fund_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fisico comparable (sin fondo)" }), h("strong", { class: "mono", text: fmtMoney(cashComparableCountedAmount(cut)) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Arqueo efectivo Versatil" }), h("strong", { class: "mono", text: fmtMoney(cut.versatil_cash_count_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado calculado" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Ajustes / otros movimientos" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.total_cash_adjustments_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Transferencias identificadas" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.identified_transfers_amount) })]),
-      h("div", { class: `cash-report-summary-row cash-report-diff cash-diff-${differenceTone}` }, [h("span", { text: "Diferencia (sobrante/faltante)" }), h("strong", { class: "mono", text: cashDifferenceText(cut.difference_amount) })]),
+      h("div", { class: `cash-report-summary-row cash-report-diff cash-diff-${differenceTone}` }, [h("span", { text: "Diferencia (sobrante/faltante vs Versatil)" }), h("strong", { class: "mono", text: cashDifferenceText(cut.difference_amount) })]),
     ]);
 
     detailTitle.textContent = `Reporte imprimible | ${cashCutShortId(cut)}`;
@@ -6038,7 +6071,7 @@ async function pageCash(pageCtx) {
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo USD" }), tableScroll(denominationTable(usd, "Denominacion"))]),
         ]),
         h("div", { class: "card col" }, [h("div", { class: "h1", text: "Controles adicionales del cajero" }), tableScroll(adjustmentsTable)]),
-        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica" }), summary]),
+        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica vs Versatil" }), summary]),
         h("div", { class: "cash-signatures" }, [
           h("div", { class: "cash-signature-line" }, [h("span", { text: "Entregado por" }), h("strong", { text: cut.delivered_by || "-" })]),
           h("div", { class: "cash-signature-line" }, [h("span", { text: "Recibido por" }), h("strong", { text: cut.received_by || "-" })]),
@@ -6054,7 +6087,7 @@ async function pageCash(pageCtx) {
     try {
       let query = supabase
         .from("cash_cuts")
-        .select("id,business_date,daily_sequence,cut_type,cashier_employee_id,total_counted_cash_amount,expected_cash_amount,difference_amount,identified_transfers_amount,status,created_at")
+        .select("id,business_date,daily_sequence,cut_type,cashier_employee_id,total_counted_cash_amount,initial_fund_amount,versatil_cash_count_amount,expected_cash_amount,difference_amount,identified_transfers_amount,status,created_at")
         .order("business_date", { ascending: false })
         .order("daily_sequence", { ascending: false })
         .limit(CASH_LIST_PAGE_SIZE);
@@ -6182,6 +6215,7 @@ async function pageCash(pageCtx) {
         exchange_rate: computed.exchangeRate,
         iva_zero_amount: computed.ivaZeroAmount,
         ticket_total_amount: computed.ticketTotalAmount,
+        versatil_cash_count_amount: computed.versatilCashCountAmount,
       };
 
       const { data, error } = await supabase.rpc("create_cash_cut", {
@@ -6272,6 +6306,11 @@ async function pageCash(pageCtx) {
     draft.ticket_total_amount = ticketTotalInput.value;
     refreshComputed();
   });
+  versatilCashCountInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.versatil_cash_count_amount = versatilCashCountInput.value;
+    refreshComputed();
+  });
   if (!employeeMode && cashierInput instanceof HTMLSelectElement) {
     cashierInput.addEventListener("change", () => {
       clearCashFlash();
@@ -6328,7 +6367,7 @@ async function pageCash(pageCtx) {
     h("div", { class: "grid3" }, [field("Factura global / venta", invoiceSaleInput), field("Suma de recibos contado", cashReceiptsInput), field("Reembolso recibos", refundReceiptsInput)]),
     h("div", { class: "grid3" }, [field("Venta neta de contado", netCashSalesInput), field("Ventas moneda nacional", salesMxnInput), field("Ventas dolar (USD)", salesUsdInput)]),
     h("div", { class: "grid3" }, [field("Tipo de cambio", exchangeRateInput), field("Ventas dolar en MXN", salesUsdMxnInput), field("IVA 0%", ivaZeroInput)]),
-    field("Total del ticket", ticketTotalInput),
+    h("div", { class: "grid2" }, [field("Total del ticket", ticketTotalInput), field("Arqueo de efectivo en comprobante Versatil", versatilCashCountInput)]),
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Desglose de venta por producto" }),
     productRowsWrap,
@@ -6384,10 +6423,13 @@ async function pageCash(pageCtx) {
     buildSummaryCard("countedUsd", "USD contado"),
     buildSummaryCard("countedUsdMxn", "USD contado en MXN"),
     buildSummaryCard("physicalTotal", "Total fisico contado"),
-    buildSummaryCard("expectedCash", "Esperado en efectivo"),
+    buildSummaryCard("initialFund", "Fondo de caja inicial"),
+    buildSummaryCard("comparablePhysical", "Fisico comparable (sin fondo)"),
+    buildSummaryCard("versatilCash", "Arqueo efectivo Versatil"),
+    buildSummaryCard("expectedCash", "Esperado calculado"),
     buildSummaryCard("adjustments", "Ajustes que afectan efectivo"),
     buildSummaryCard("transfers", "Transferencias identificadas"),
-    buildSummaryCard("difference", "Diferencia")
+    buildSummaryCard("difference", "Diferencia vs Versatil")
   );
   showStoredCashNotice();
   refreshComputed();
