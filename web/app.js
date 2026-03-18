@@ -5590,6 +5590,13 @@ async function pageCash(pageCtx) {
   const listBusinessDateInput = createInput("date", state.cashFilters.business_date || "");
   const listCashierInput = createSelect(cashierOptions, state.cashFilters.cashier_employee_id || "");
 
+  function cashField(labelText, inputEl, extraClass = "") {
+    return h("div", { class: `cash-form-field${extraClass ? ` ${extraClass}` : ""}` }, [
+      h("label", { class: "cash-form-label", text: labelText }),
+      inputEl,
+    ]);
+  }
+
   function clearCashFlash() {
     if (!state.cashFlashNotice) return;
     state.cashFlashNotice = null;
@@ -6351,23 +6358,33 @@ async function pageCash(pageCtx) {
     ["Limpiar formulario"]
   );
 
-  const formCard = h("div", { class: "card col no-print" }, [
+  const formCard = h("div", { class: "card col no-print cash-form-card" }, [
     h("div", { class: "h1", text: "Corte Z" }),
-    h("div", { class: "muted", text: employeeMode ? "Captura el cierre del día y envíalo una sola vez." : "Puedes capturar, revisar e imprimir cierres de caja desde aquí." }),
+    h("div", { class: "muted cash-form-intro", text: employeeMode ? "Captura el cierre del día y envíalo una sola vez." : "Puedes capturar, revisar e imprimir cierres de caja desde aquí." }),
     formMsg,
+    h("div", { class: "cash-priority-block" }, [
+      h("div", { class: "cash-priority-copy" }, [
+        h("div", { class: "cash-priority-title", text: "Datos clave" }),
+        h("div", { class: "muted cash-priority-note", text: "Captura primero el Total del ticket y el Arqueo de efectivo en comprobante Versatil para que el cierre y la diferencia sean fáciles de revisar." }),
+      ]),
+      h("div", { class: "cash-priority-grid" }, [
+        cashField("Total del ticket", ticketTotalInput, "cash-priority-field"),
+        cashField("Arqueo de efectivo en comprobante Versatil", versatilCashCountInput, "cash-priority-field cash-priority-accent"),
+      ]),
+    ]),
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Datos generales del corte" }),
-    h("div", { class: "grid3" }, [field("Fecha del negocio", businessDateInput), field("Sucursal", branchNameInput), field("Tipo de corte", cutTypeInput)]),
-    h("div", { class: "grid3" }, [field("Folio corte", cutFolioInput), field("Inicio corte", startedAtInput), field("Fin corte", endedAtInput)]),
-    h("div", { class: "grid3" }, [employeeMode ? field("Empleado", cashierInput) : field("Empleado / Cajero", cashierInput), field("Cajero sistema", cashierSystemInput), field("Clientes atendidos", customersServedInput)]),
-    h("div", { class: "grid3" }, [field("Folio inicio tickets", ticketStartFolioInput), field("Folio fin tickets", ticketEndFolioInput), field("Entregado por", deliveredByInput)]),
-    h("div", { class: "grid2" }, [field("Recibido por", receivedByInput), field("Observaciones", observationsInput)]),
+    h("div", { class: "grid3" }, [cashField("Fecha del negocio", businessDateInput), cashField("Sucursal", branchNameInput), cashField("Tipo de corte", cutTypeInput)]),
+    h("div", { class: "grid3" }, [cashField("Folio corte", cutFolioInput), cashField("Inicio corte", startedAtInput), cashField("Fin corte", endedAtInput)]),
+    h("div", { class: "grid3" }, [employeeMode ? cashField("Empleado", cashierInput) : cashField("Empleado / Cajero", cashierInput), cashField("Cajero sistema", cashierSystemInput), cashField("Clientes atendidos", customersServedInput)]),
+    h("div", { class: "grid3" }, [cashField("Folio inicio tickets", ticketStartFolioInput), cashField("Folio fin tickets", ticketEndFolioInput), cashField("Entregado por", deliveredByInput)]),
+    h("div", { class: "grid2" }, [cashField("Recibido por", receivedByInput), cashField("Observaciones", observationsInput)]),
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Datos del ticket POS" }),
-    h("div", { class: "grid3" }, [field("Factura global / venta", invoiceSaleInput), field("Suma de recibos contado", cashReceiptsInput), field("Reembolso recibos", refundReceiptsInput)]),
-    h("div", { class: "grid3" }, [field("Venta neta de contado", netCashSalesInput), field("Ventas moneda nacional", salesMxnInput), field("Ventas dolar (USD)", salesUsdInput)]),
-    h("div", { class: "grid3" }, [field("Tipo de cambio", exchangeRateInput), field("Ventas dolar en MXN", salesUsdMxnInput), field("IVA 0%", ivaZeroInput)]),
-    h("div", { class: "grid2" }, [field("Total del ticket", ticketTotalInput), field("Arqueo de efectivo en comprobante Versatil", versatilCashCountInput)]),
+    h("div", { class: "muted cash-section-note", text: "Los dos importes más importantes ya están arriba para que resalten desde el inicio." }),
+    h("div", { class: "grid3" }, [cashField("Factura global / venta", invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Reembolso recibos", refundReceiptsInput)]),
+    h("div", { class: "grid3" }, [cashField("Venta neta de contado", netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dolar (USD)", salesUsdInput)]),
+    h("div", { class: "grid3" }, [cashField("Tipo de cambio", exchangeRateInput), cashField("Ventas dolar en MXN", salesUsdMxnInput), cashField("IVA 0%", ivaZeroInput)]),
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Desglose de venta por producto" }),
     productRowsWrap,
