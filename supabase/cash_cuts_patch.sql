@@ -566,7 +566,7 @@ begin
   end loop;
 
   v_expected_cash_amount := round(v_net_cash_sales_amount + v_total_cash_adjustments_amount, 2);
-  v_difference_amount := round((v_total_counted_cash_amount - v_initial_fund_amount) - v_versatil_cash_count_amount, 2);
+  v_difference_amount := round(v_total_counted_cash_amount - v_versatil_cash_count_amount, 2);
 
   update public.cash_cuts
   set
@@ -594,6 +594,12 @@ $$;
 alter table public.cash_cuts enable row level security;
 alter table public.cash_cut_product_lines enable row level security;
 alter table public.cash_cut_denominations enable row level security;
+update public.cash_cuts
+set
+  initial_fund_amount = coalesce(initial_fund_amount, 0),
+  versatil_cash_count_amount = coalesce(versatil_cash_count_amount, 0),
+  difference_amount = round(total_counted_cash_amount - coalesce(versatil_cash_count_amount, 0), 2);
+
 alter table public.cash_cut_adjustments enable row level security;
 
 drop policy if exists cash_cuts_select_manager on public.cash_cuts;

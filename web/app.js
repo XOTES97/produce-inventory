@@ -1304,8 +1304,8 @@ function computeCashCutDraft(draft) {
   identifiedTransfersAmount = roundMoneyValue(identifiedTransfersAmount);
 
   const expectedCashAmount = roundMoneyValue(netCashSalesAmount + totalCashAdjustmentsAmount);
-  const comparableCountedCashAmount = roundMoneyValue(totalCountedCashAmount - initialFundAmount);
-  const differenceAmount = roundMoneyValue(comparableCountedCashAmount - versatilCashCountAmount);
+  const comparableCountedCashAmount = roundMoneyValue(totalCountedCashAmount);
+  const differenceAmount = roundMoneyValue(totalCountedCashAmount - versatilCashCountAmount);
 
   return {
     exchangeRate,
@@ -1384,7 +1384,7 @@ function cashDifferenceText(value) {
 }
 
 function cashComparableCountedAmount(source) {
-  return roundMoneyValue(Number(source?.total_counted_cash_amount || 0) - Number(source?.initial_fund_amount || 0));
+  return roundMoneyValue(Number(source?.total_counted_cash_amount || 0));
 }
 
 function cashAdjustmentEffectText(row) {
@@ -5657,7 +5657,7 @@ async function pageCash(pageCtx) {
     setTextSummary("countedUsdMxn", "USD contado en MXN", fmtMoney(computed.totalUsdMxnAmount));
     setTextSummary("physicalTotal", "Total fisico contado", fmtMoney(computed.totalCountedCashAmount));
     setTextSummary("initialFund", "Fondo de caja inicial", fmtMoney(computed.initialFundAmount));
-    setTextSummary("comparablePhysical", "Fisico comparable (sin fondo)", fmtMoney(computed.comparableCountedCashAmount));
+    setTextSummary("comparablePhysical", "Fisico para comparacion", fmtMoney(computed.comparableCountedCashAmount));
     setTextSummary("versatilCash", "Arqueo efectivo Versatil", fmtMoney(computed.versatilCashCountAmount));
     setTextSummary("expectedCash", "Esperado calculado", fmtMoney(computed.expectedCashAmount));
     setTextSummary("adjustments", "Ajustes que afectan efectivo", fmtSignedMoney(computed.totalCashAdjustmentsAmount));
@@ -5854,7 +5854,7 @@ async function pageCash(pageCtx) {
                 : adjustmentType === "reembolso_dia"
                   ? "Se toma automáticamente del POS y descuenta efectivo."
                   : adjustmentType === "fondo_inicial"
-                    ? "Base fija del cajon. Se excluye de la comparacion contra Versatil."
+                    ? "Referencia informativa. No suma ni resta en la diferencia contra Versatil."
                     : "El sistema aplica el signo según el concepto o dirección.",
           }),
         ]),
@@ -5943,7 +5943,7 @@ async function pageCash(pageCtx) {
         ]),
         h("div", {
           class: "muted",
-          text: `Comparable ${fmtMoney(cashComparableCountedAmount(row))} | Versatil ${fmtMoney(row.versatil_cash_count_amount)} | Transferencias ${fmtSignedMoney(row.identified_transfers_amount)}`,
+          text: `Fisico ${fmtMoney(row.total_counted_cash_amount)} | Versatil ${fmtMoney(row.versatil_cash_count_amount)} | Transferencias ${fmtSignedMoney(row.identified_transfers_amount)}`,
         }),
       ]);
       fragment.appendChild(card);
@@ -5978,7 +5978,7 @@ async function pageCash(pageCtx) {
         h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dolar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
         h("tr", {}, [h("th", { text: "Tipo de cambio" }), h("td", { text: Number(cut.exchange_rate || 0).toFixed(4) }), h("th", { text: "Ventas dolar en MXN" }), h("td", { text: fmtMoney(cut.sales_usd_mxn_amount) })]),
         h("tr", {}, [h("th", { text: "IVA 0%" }), h("td", { text: fmtMoney(cut.iva_zero_amount) }), h("th", { text: "Total del ticket" }), h("td", { text: fmtMoney(cut.ticket_total_amount) })]),
-        h("tr", {}, [h("th", { text: "Arqueo efectivo Versatil" }), h("td", { text: fmtMoney(cut.versatil_cash_count_amount) }), h("th", { text: "Referencia de diferencia" }), h("td", { text: "Fisico sin fondo vs Versatil" })]),
+        h("tr", {}, [h("th", { text: "Arqueo efectivo Versatil" }), h("td", { text: fmtMoney(cut.versatil_cash_count_amount) }), h("th", { text: "Referencia de diferencia" }), h("td", { text: "Fisico contado vs Versatil" })]),
       ]),
     ]);
 
@@ -6047,7 +6047,7 @@ async function pageCash(pageCtx) {
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado en MXN" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_mxn_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total fisico contado" }), h("strong", { class: "mono", text: fmtMoney(cut.total_counted_cash_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fondo de caja inicial" }), h("strong", { class: "mono", text: fmtMoney(cut.initial_fund_amount) })]),
-      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fisico comparable (sin fondo)" }), h("strong", { class: "mono", text: fmtMoney(cashComparableCountedAmount(cut)) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fisico para comparacion" }), h("strong", { class: "mono", text: fmtMoney(cashComparableCountedAmount(cut)) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Arqueo efectivo Versatil" }), h("strong", { class: "mono", text: fmtMoney(cut.versatil_cash_count_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado calculado" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Ajustes / otros movimientos" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.total_cash_adjustments_amount) })]),
@@ -6424,7 +6424,7 @@ async function pageCash(pageCtx) {
     buildSummaryCard("countedUsdMxn", "USD contado en MXN"),
     buildSummaryCard("physicalTotal", "Total fisico contado"),
     buildSummaryCard("initialFund", "Fondo de caja inicial"),
-    buildSummaryCard("comparablePhysical", "Fisico comparable (sin fondo)"),
+    buildSummaryCard("comparablePhysical", "Fisico para comparacion"),
     buildSummaryCard("versatilCash", "Arqueo efectivo Versatil"),
     buildSummaryCard("expectedCash", "Esperado calculado"),
     buildSummaryCard("adjustments", "Ajustes que afectan efectivo"),
