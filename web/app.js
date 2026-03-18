@@ -6357,14 +6357,17 @@ async function pageCash(pageCtx) {
   creditInvoicedSalesInput.addEventListener("input", () => {
     clearCashFlash();
     draft.credit_invoiced_sales_amount = creditInvoicedSalesInput.value;
+    refreshComputed();
   });
   cashInvoicedSalesInput.addEventListener("input", () => {
     clearCashFlash();
     draft.cash_invoiced_sales_amount = cashInvoicedSalesInput.value;
+    refreshComputed();
   });
   totalInvoicedSalesInput.addEventListener("input", () => {
     clearCashFlash();
     draft.total_invoiced_sales_amount = totalInvoicedSalesInput.value;
+    refreshComputed();
   });
   salesMxnInput.addEventListener("input", () => {
     clearCashFlash();
