@@ -5964,6 +5964,11 @@ async function pageCash(pageCtx) {
     const bills = denominationLines.filter((row) => row.currency === "MXN" && row.kind === "bill");
     const coins = denominationLines.filter((row) => row.currency === "MXN" && row.kind === "coin");
     const usd = denominationLines.filter((row) => row.currency === "USD");
+    const displayBills = bills.filter((row) => Number(row.quantity || 0) > 0);
+    const displayCoins = coins.filter((row) => Number(row.quantity || 0) > 0);
+    const displayUsd = usd.filter((row) => Number(row.quantity || 0) > 0);
+    const visibleProductLines = productLines.filter((row) => row.product_label || Number(row.amount || 0) > 0 || row.note);
+    const visibleAdjustments = adjustments.filter((row) => Number(row.amount || 0) > 0 || row.support_reference || row.note || row.adjustment_type === "fondo_inicial");
     const differenceTone = cashDifferenceKind(cut.difference_amount);
 
     const generalTable = h("table", { class: "table" }, [
@@ -5994,16 +5999,18 @@ async function pageCash(pageCtx) {
       h(
         "tbody",
         {},
-        (productLines.length ? productLines : [{ product_label: "-", amount: 0, note: "" }]).map((row) =>
+        (visibleProductLines.length ? visibleProductLines : [{ product_label: "-", amount: 0, note: "", is_empty: true }]).map((row) =>
           h("tr", {}, [
             h("td", { text: row.product_label || "-" }),
-            h("td", { class: "mono", text: fmtMoney(row.amount) }),
+            h("td", { class: "mono", text: row.is_empty ? "-" : fmtMoney(row.amount) }),
             h("td", {
               class: "mono",
               text:
-                Number(cut.ticket_total_amount || 0) > 0
-                  ? `${((Number(row.amount || 0) / Number(cut.ticket_total_amount || 0)) * 100).toFixed(1)}%`
-                  : "0.0%",
+                row.is_empty
+                  ? "-"
+                  : Number(cut.ticket_total_amount || 0) > 0
+                    ? `${((Number(row.amount || 0) / Number(cut.ticket_total_amount || 0)) * 100).toFixed(1)}%`
+                    : "0.0%",
             }),
             h("td", { text: row.note || "-" }),
           ])
@@ -6011,17 +6018,20 @@ async function pageCash(pageCtx) {
       ),
     ]);
 
-    function denominationTable(rows, currencyLabel) {
+    function denominationTable(rows, currencyLabel, fallbackCurrency = "MXN") {
+      const displayRows = rows.length
+        ? rows
+        : [{ currency: fallbackCurrency, denomination: 0, quantity: 0, line_total: 0, is_empty: true }];
       return h("table", { class: "table" }, [
         h("thead", {}, [h("tr", {}, [h("th", { text: currencyLabel }), h("th", { text: "Cantidad" }), h("th", { text: "Total" })])]),
         h(
           "tbody",
           {},
-          rows.map((row) =>
+          displayRows.map((row) =>
             h("tr", {}, [
-              h("td", { class: "mono", text: row.currency === "USD" ? fmtMoney(row.denomination, "USD") : fmtMoney(row.denomination) }),
-              h("td", { class: "mono", text: String(row.quantity || 0) }),
-              h("td", { class: "mono", text: fmtMoney(row.line_total, row.currency) }),
+              h("td", { class: "mono", text: row.is_empty ? "-" : row.currency === "USD" ? fmtMoney(row.denomination, "USD") : fmtMoney(row.denomination) }),
+              h("td", { class: "mono", text: row.is_empty ? "-" : String(row.quantity || 0) }),
+              h("td", { class: "mono", text: row.is_empty ? "-" : fmtMoney(row.line_total, row.currency) }),
             ])
           )
         ),
@@ -6033,13 +6043,13 @@ async function pageCash(pageCtx) {
       h(
         "tbody",
         {},
-        adjustments.map((row) =>
+        (visibleAdjustments.length ? visibleAdjustments : [{ adjustment_type: "-", amount: 0, support_reference: "", note: "", is_empty: true }]).map((row) =>
           h("tr", {}, [
-            h("td", { text: cashAdjustmentLabel(row.adjustment_type) }),
-            h("td", { class: "mono", text: fmtMoney(row.amount) }),
+            h("td", { text: row.is_empty ? "-" : cashAdjustmentLabel(row.adjustment_type) }),
+            h("td", { class: "mono", text: row.is_empty ? "-" : fmtMoney(row.amount) }),
             h("td", {
-              class: cashAdjustmentEffectClass(row),
-              text: cashAdjustmentEffectText(row),
+              class: row.is_empty ? "mono muted" : cashAdjustmentEffectClass(row),
+              text: row.is_empty ? "-" : cashAdjustmentEffectText(row),
             }),
             h("td", { text: row.support_reference || "-" }),
             h("td", { text: row.note || "-" }),
@@ -6063,27 +6073,34 @@ async function pageCash(pageCtx) {
     ]);
 
     detailTitle.textContent = `Reporte imprimible | ${cashCutShortId(cut)}`;
+    const productCard = visibleProductLines.length
+      ? h("div", { class: "card col" }, [h("div", { class: "h1", text: "Desglose de venta por producto" }), tableScroll(productTable)])
+      : null;
     detailMsg.replaceChildren(
       h("div", { class: "cash-printable" }, [
         h("div", { class: "cash-print-header" }, [
           h("div", { class: "h1", text: "REPORTE DE CORTE DE CAJA Y ARQUEO DE EFECTIVO" }),
           h("div", { class: "muted", text: `${APP_NAME} | ${cashCutShortId(cut)} | Generado ${new Date().toLocaleString()}` }),
         ]),
-        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos generales del corte" }), tableScroll(generalTable)]),
-        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable)]),
-        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Desglose de venta por producto" }), tableScroll(productTable)]),
-        h("div", { class: "cash-denomination-grid" }, [
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Billetes" }), tableScroll(denominationTable(bills, "Billete"))]),
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Monedas" }), tableScroll(denominationTable(coins, "Moneda"))]),
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo USD" }), tableScroll(denominationTable(usd, "Denominacion"))]),
+        h("div", { class: "cash-print-grid cash-print-grid-2" }, [
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos generales del corte" }), tableScroll(generalTable)]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica vs Versatil" }), summary]),
         ]),
-        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Controles adicionales del cajero" }), tableScroll(adjustmentsTable)]),
-        h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica vs Versatil" }), summary]),
+        h("div", { class: "cash-print-grid cash-print-grid-2" }, [
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable)]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Controles adicionales del cajero" }), tableScroll(adjustmentsTable)]),
+        ]),
+        h("div", { class: "cash-print-grid cash-print-grid-3" }, [
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Billetes" }), tableScroll(denominationTable(displayBills, "Billete", "MXN"))]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Monedas" }), tableScroll(denominationTable(displayCoins, "Moneda", "MXN"))]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo USD" }), tableScroll(denominationTable(displayUsd, "Denominacion", "USD"))]),
+        ]),
+        productCard,
         h("div", { class: "cash-signatures" }, [
           h("div", { class: "cash-signature-line" }, [h("span", { text: "Entregado por" }), h("strong", { text: cut.delivered_by || "-" })]),
           h("div", { class: "cash-signature-line" }, [h("span", { text: "Recibido por" }), h("strong", { text: cut.received_by || "-" })]),
         ]),
-      ])
+      ].filter(Boolean))
     );
   }
 

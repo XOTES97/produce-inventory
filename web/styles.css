@@ -671,6 +671,20 @@ textarea { min-height: 84px; resize: vertical; }
   gap: 6px;
 }
 
+.cash-print-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.cash-print-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.cash-print-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+
 .right { text-align: right; }
 .delta-pos { color: var(--green2); }
 .delta-neg { color: var(--red); }
@@ -708,7 +722,9 @@ textarea { min-height: 84px; resize: vertical; }
   .cash-denomination-grid,
   .cash-summary-grid,
   .cash-signatures,
-  .cash-priority-grid {
+  .cash-priority-grid,
+  .cash-print-grid-2,
+  .cash-print-grid-3 {
     grid-template-columns: 1fr;
   }
   .cash-line-grid,
@@ -790,8 +806,14 @@ textarea { min-height: 84px; resize: vertical; }
 }
 
 @media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
   body {
     background: #fff;
+    font-size: 10px;
   }
 
   .topbar,
@@ -802,7 +824,7 @@ textarea { min-height: 84px; resize: vertical; }
 
   .content {
     max-width: none;
-    padding: 0 10mm 0 10mm;
+    padding: 0;
   }
 
   .card {
@@ -811,11 +833,84 @@ textarea { min-height: 84px; resize: vertical; }
     background: #fff;
   }
 
-  .cash-printable .card,
-  .cash-report-summary,
-  .cash-signatures {
+  .card:before {
+    display: none;
+  }
+
+  .cash-printable {
+    gap: 6px;
+    font-size: 9.6px;
+  }
+
+  .cash-printable .card {
+    padding: 7px 8px;
+    border-radius: 8px;
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  .cash-printable .h1 {
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+
+  .cash-print-header {
+    gap: 2px;
     break-inside: avoid;
     page-break-inside: avoid;
+  }
+
+  .cash-print-header .h1 {
+    font-size: 13px;
+  }
+
+  .cash-printable .table th,
+  .cash-printable .table td {
+    padding: 4px 5px;
+    font-size: 9px;
+    line-height: 1.15;
+  }
+
+  .cash-printable .table th {
+    font-size: 8px;
+  }
+
+  .cash-print-grid {
+    gap: 6px;
+  }
+
+  .cash-print-grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cash-print-grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cash-report-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .cash-report-summary-row {
+    padding: 5px 6px;
+    gap: 8px;
+    font-size: 9px;
+  }
+
+  .cash-signatures {
+    margin-top: 2px;
+    gap: 10px;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .cash-signature-line {
+    padding-top: 6px;
+    gap: 3px;
   }
 }
 
