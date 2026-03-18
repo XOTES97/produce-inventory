@@ -1233,6 +1233,7 @@ function computeCashCutDraft(draft) {
   const creditInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.credit_invoiced_sales_amount, 0));
   const cashInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.cash_invoiced_sales_amount, 0));
   const totalInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.total_invoiced_sales_amount, 0));
+  const invoicedSalesMismatchAmount = roundMoneyValue((creditInvoicedSalesAmount + cashInvoicedSalesAmount) - totalInvoicedSalesAmount);
   const salesUsdAmount = roundMoneyValue(numberFromInput(safeDraft.sales_usd_amount, 0));
   const salesUsdMxnAmount = roundMoneyValue(salesUsdAmount * exchangeRate);
   const ticketTotalAmount = roundMoneyValue(numberFromInput(safeDraft.ticket_total_amount, 0));
@@ -1322,6 +1323,7 @@ function computeCashCutDraft(draft) {
     creditInvoicedSalesAmount,
     cashInvoicedSalesAmount,
     totalInvoicedSalesAmount,
+    invoicedSalesMismatchAmount,
     salesMxnAmount: roundMoneyValue(numberFromInput(safeDraft.sales_mxn_amount, 0)),
     salesUsdAmount,
     salesUsdMxnAmount,
@@ -5519,6 +5521,7 @@ async function pageCash(pageCtx) {
   const denominationWrap = h("div", { class: "cash-denomination-grid" });
   const adjustmentsWrap = h("div", { class: "col" });
   const summaryWrap = h("div", { class: "cash-summary-grid" });
+  const posWarningWrap = h("div");
   const detailMsg = h("div");
   const listMsg = h("div");
   const listWrap = h("div", { class: "col" });
@@ -5670,6 +5673,17 @@ async function pageCash(pageCtx) {
         effectEl.className = cashAdjustmentEffectClass(row);
       }
     });
+
+    if (Math.abs(computed.invoicedSalesMismatchAmount) >= 0.005) {
+      posWarningWrap.replaceChildren(
+        notice(
+          "warn",
+          `Revisa ventas facturadas: crédito + efectivo = ${fmtMoney(computed.creditInvoicedSalesAmount + computed.cashInvoicedSalesAmount)}, pero Total de ventas facturadas = ${fmtMoney(computed.totalInvoicedSalesAmount)}.`
+        )
+      );
+    } else {
+      posWarningWrap.replaceChildren();
+    }
 
     setTextSummary("countedMxn", "Efectivo contado MXN", fmtMoney(computed.totalMxnBillsAmount + computed.totalMxnCoinsAmount));
     setTextSummary("countedUsd", "USD contado", fmtMoney(computed.totalUsdAmount, "USD"));
@@ -6429,6 +6443,7 @@ async function pageCash(pageCtx) {
     h("div", { class: "h1", text: "Datos del ticket POS" }),
     h("div", { class: "muted cash-section-note", text: "Los dos importes más importantes ya están arriba para que resalten desde el inicio." }),
     h("div", { class: "muted cash-section-note", text: "Las ventas facturadas se registran para control. No cambian automáticamente el arqueo; la diferencia sigue comparándose contra Versatil." }),
+    posWarningWrap,
     h("div", { class: "grid3" }, [cashField("Factura global / venta", invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Reembolso recibos", refundReceiptsInput)]),
     h("div", { class: "grid3" }, [cashField("Ventas a crédito facturadas", creditInvoicedSalesInput), cashField("Ventas en efectivo facturadas", cashInvoicedSalesInput), cashField("Total de ventas facturadas", totalInvoicedSalesInput)]),
     h("div", { class: "grid3" }, [cashField("Venta neta de contado", netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dolar (USD)", salesUsdInput)]),
