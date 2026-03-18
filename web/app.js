@@ -1156,6 +1156,9 @@ function createCashCutDraft() {
     invoice_sale_amount: "",
     cash_receipts_amount: "",
     refund_receipts_amount: "",
+    credit_invoiced_sales_amount: "",
+    cash_invoiced_sales_amount: "",
+    total_invoiced_sales_amount: "",
     sales_mxn_amount: "",
     sales_usd_amount: "",
     exchange_rate: CASH_DEFAULT_EXCHANGE_RATE.toFixed(2),
@@ -1227,6 +1230,9 @@ function computeCashCutDraft(draft) {
   const cashReceiptsAmount = roundMoneyValue(numberFromInput(safeDraft.cash_receipts_amount, 0));
   const refundReceiptsAmount = roundMoneyValue(numberFromInput(safeDraft.refund_receipts_amount, 0));
   const netCashSalesAmount = roundMoneyValue(cashReceiptsAmount - refundReceiptsAmount);
+  const creditInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.credit_invoiced_sales_amount, 0));
+  const cashInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.cash_invoiced_sales_amount, 0));
+  const totalInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.total_invoiced_sales_amount, 0));
   const salesUsdAmount = roundMoneyValue(numberFromInput(safeDraft.sales_usd_amount, 0));
   const salesUsdMxnAmount = roundMoneyValue(salesUsdAmount * exchangeRate);
   const ticketTotalAmount = roundMoneyValue(numberFromInput(safeDraft.ticket_total_amount, 0));
@@ -1313,6 +1319,9 @@ function computeCashCutDraft(draft) {
     cashReceiptsAmount,
     refundReceiptsAmount,
     netCashSalesAmount,
+    creditInvoicedSalesAmount,
+    cashInvoicedSalesAmount,
+    totalInvoicedSalesAmount,
     salesMxnAmount: roundMoneyValue(numberFromInput(safeDraft.sales_mxn_amount, 0)),
     salesUsdAmount,
     salesUsdMxnAmount,
@@ -5578,6 +5587,9 @@ async function pageCash(pageCtx) {
   const invoiceSaleInput = createInput("number", draft.invoice_sale_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const cashReceiptsInput = createInput("number", draft.cash_receipts_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const refundReceiptsInput = createInput("number", draft.refund_receipts_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const creditInvoicedSalesInput = createInput("number", draft.credit_invoiced_sales_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const cashInvoicedSalesInput = createInput("number", draft.cash_invoiced_sales_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const totalInvoicedSalesInput = createInput("number", draft.total_invoiced_sales_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const netCashSalesInput = createInput("text", "", { readonly: "true" });
   const salesMxnInput = createInput("number", draft.sales_mxn_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const salesUsdInput = createInput("number", draft.sales_usd_amount, { min: "0", step: "0.01", inputmode: "decimal" });
@@ -5987,6 +5999,8 @@ async function pageCash(pageCtx) {
       h("tbody", {}, [
         h("tr", {}, [h("th", { text: "Factura global / venta" }), h("td", { text: fmtMoney(cut.invoice_sale_amount) }), h("th", { text: "Suma de recibos contado" }), h("td", { text: fmtMoney(cut.cash_receipts_amount) })]),
         h("tr", {}, [h("th", { text: "Reembolso recibos" }), h("td", { text: fmtMoney(cut.refund_receipts_amount) }), h("th", { text: "Venta neta de contado" }), h("td", { text: fmtMoney(cut.net_cash_sales_amount) })]),
+        h("tr", {}, [h("th", { text: "Ventas a crédito facturadas" }), h("td", { text: fmtMoney(cut.credit_invoiced_sales_amount) }), h("th", { text: "Ventas en efectivo facturadas" }), h("td", { text: fmtMoney(cut.cash_invoiced_sales_amount) })]),
+        h("tr", {}, [h("th", { text: "Total de ventas facturadas" }), h("td", { text: fmtMoney(cut.total_invoiced_sales_amount) }), h("th", { text: "Impacto en arqueo" }), h("td", { text: "Informativo; no cambia la diferencia automática" })]),
         h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dolar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
         h("tr", {}, [h("th", { text: "Tipo de cambio" }), h("td", { text: Number(cut.exchange_rate || 0).toFixed(4) }), h("th", { text: "Ventas dolar en MXN" }), h("td", { text: fmtMoney(cut.sales_usd_mxn_amount) })]),
         h("tr", {}, [h("th", { text: "IVA 0%" }), h("td", { text: fmtMoney(cut.iva_zero_amount) }), h("th", { text: "Total del ticket" }), h("td", { text: fmtMoney(cut.ticket_total_amount) })]),
@@ -6234,6 +6248,9 @@ async function pageCash(pageCtx) {
         cash_receipts_amount: computed.cashReceiptsAmount,
         refund_receipts_amount: computed.refundReceiptsAmount,
         net_cash_sales_amount: computed.netCashSalesAmount,
+        credit_invoiced_sales_amount: computed.creditInvoicedSalesAmount,
+        cash_invoiced_sales_amount: computed.cashInvoicedSalesAmount,
+        total_invoiced_sales_amount: computed.totalInvoicedSalesAmount,
         sales_mxn_amount: computed.salesMxnAmount,
         sales_usd_amount: computed.salesUsdAmount,
         exchange_rate: computed.exchangeRate,
@@ -6306,6 +6323,18 @@ async function pageCash(pageCtx) {
     clearCashFlash();
     draft.refund_receipts_amount = refundReceiptsInput.value;
     refreshComputed();
+  });
+  creditInvoicedSalesInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.credit_invoiced_sales_amount = creditInvoicedSalesInput.value;
+  });
+  cashInvoicedSalesInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.cash_invoiced_sales_amount = cashInvoicedSalesInput.value;
+  });
+  totalInvoicedSalesInput.addEventListener("input", () => {
+    clearCashFlash();
+    draft.total_invoiced_sales_amount = totalInvoicedSalesInput.value;
   });
   salesMxnInput.addEventListener("input", () => {
     clearCashFlash();
@@ -6399,7 +6428,9 @@ async function pageCash(pageCtx) {
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Datos del ticket POS" }),
     h("div", { class: "muted cash-section-note", text: "Los dos importes más importantes ya están arriba para que resalten desde el inicio." }),
+    h("div", { class: "muted cash-section-note", text: "Las ventas facturadas se registran para control. No cambian automáticamente el arqueo; la diferencia sigue comparándose contra Versatil." }),
     h("div", { class: "grid3" }, [cashField("Factura global / venta", invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Reembolso recibos", refundReceiptsInput)]),
+    h("div", { class: "grid3" }, [cashField("Ventas a crédito facturadas", creditInvoicedSalesInput), cashField("Ventas en efectivo facturadas", cashInvoicedSalesInput), cashField("Total de ventas facturadas", totalInvoicedSalesInput)]),
     h("div", { class: "grid3" }, [cashField("Venta neta de contado", netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dolar (USD)", salesUsdInput)]),
     h("div", { class: "grid3" }, [cashField("Tipo de cambio", exchangeRateInput), cashField("Ventas dolar en MXN", salesUsdMxnInput), cashField("IVA 0%", ivaZeroInput)]),
     h("div", { class: "divider" }),

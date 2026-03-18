@@ -59,6 +59,9 @@ create table if not exists public.cash_cuts (
   cash_receipts_amount numeric(12, 2) not null default 0,
   refund_receipts_amount numeric(12, 2) not null default 0,
   net_cash_sales_amount numeric(12, 2) not null default 0,
+  credit_invoiced_sales_amount numeric(12, 2) not null default 0,
+  cash_invoiced_sales_amount numeric(12, 2) not null default 0,
+  total_invoiced_sales_amount numeric(12, 2) not null default 0,
   sales_mxn_amount numeric(12, 2) not null default 0,
   sales_usd_amount numeric(12, 2) not null default 0,
   exchange_rate numeric(12, 4) not null default 17.5,
@@ -90,6 +93,15 @@ alter table public.cash_cuts
 
 alter table public.cash_cuts
   add column if not exists versatil_cash_count_amount numeric(12, 2) not null default 0;
+
+alter table public.cash_cuts
+  add column if not exists credit_invoiced_sales_amount numeric(12, 2) not null default 0;
+
+alter table public.cash_cuts
+  add column if not exists cash_invoiced_sales_amount numeric(12, 2) not null default 0;
+
+alter table public.cash_cuts
+  add column if not exists total_invoiced_sales_amount numeric(12, 2) not null default 0;
 
 update public.cash_cuts c
 set workspace_id = wu.workspace_id
@@ -211,6 +223,9 @@ declare
   v_cash_receipts_amount numeric(12, 2);
   v_refund_receipts_amount numeric(12, 2);
   v_net_cash_sales_amount numeric(12, 2);
+  v_credit_invoiced_sales_amount numeric(12, 2);
+  v_cash_invoiced_sales_amount numeric(12, 2);
+  v_total_invoiced_sales_amount numeric(12, 2);
   v_sales_mxn_amount numeric(12, 2);
   v_sales_usd_amount numeric(12, 2);
   v_iva_zero_amount numeric(12, 2);
@@ -313,6 +328,9 @@ begin
   v_cash_receipts_amount := coalesce(nullif(cut->>'cash_receipts_amount', '')::numeric, 0);
   v_refund_receipts_amount := coalesce(nullif(cut->>'refund_receipts_amount', '')::numeric, 0);
   v_net_cash_sales_amount := coalesce(nullif(cut->>'net_cash_sales_amount', '')::numeric, 0);
+  v_credit_invoiced_sales_amount := coalesce(nullif(cut->>'credit_invoiced_sales_amount', '')::numeric, 0);
+  v_cash_invoiced_sales_amount := coalesce(nullif(cut->>'cash_invoiced_sales_amount', '')::numeric, 0);
+  v_total_invoiced_sales_amount := coalesce(nullif(cut->>'total_invoiced_sales_amount', '')::numeric, 0);
   v_sales_mxn_amount := coalesce(nullif(cut->>'sales_mxn_amount', '')::numeric, 0);
   v_sales_usd_amount := coalesce(nullif(cut->>'sales_usd_amount', '')::numeric, 0);
   v_iva_zero_amount := coalesce(nullif(cut->>'iva_zero_amount', '')::numeric, 0);
@@ -353,6 +371,9 @@ begin
     cash_receipts_amount,
     refund_receipts_amount,
     net_cash_sales_amount,
+    credit_invoiced_sales_amount,
+    cash_invoiced_sales_amount,
+    total_invoiced_sales_amount,
     sales_mxn_amount,
     sales_usd_amount,
     exchange_rate,
@@ -385,6 +406,9 @@ begin
     v_cash_receipts_amount,
     v_refund_receipts_amount,
     v_net_cash_sales_amount,
+    v_credit_invoiced_sales_amount,
+    v_cash_invoiced_sales_amount,
+    v_total_invoiced_sales_amount,
     v_sales_mxn_amount,
     v_sales_usd_amount,
     v_exchange_rate,
