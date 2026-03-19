@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.02";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.02";
+import * as cfg from "./config.js?v=2026.03.19.03";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.03";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.02";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.03";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -42,6 +42,7 @@ const PROOF_COMPRESS_BYTES_THRESHOLD = 1_200_000;
 const EMPLOYEE_PROOF_MAX_DIMENSION = 960;
 const EMPLOYEE_PROOF_JPEG_QUALITY = 0.74;
 const EMPLOYEE_CAMERA_REQUEST_DIMENSION = 1280;
+const POST_SAVE_REFERENCE_WAIT_MS = 180;
 const PROOF_PICKER_RESET_MS = 45_000;
 const MOVEMENT_LINES_PREVIEW_LIMIT = 12;
 const DEFAULT_PROOF_STAMP_ROWS = 2;
@@ -1038,6 +1039,19 @@ function movementShortId(movementOrId, explicitReferenceNumber = null) {
     .slice(0, 8)
     .toUpperCase();
   return raw ? `FST-${raw}` : "FST-";
+}
+
+function movementSavedText(movementType, movementOrId) {
+  return `Guardado: ${movementLabel(movementType)} | ID ${movementShortId(movementOrId)}`;
+}
+
+async function fetchSavedMovementReference(movementId) {
+  const { data } = await supabase
+    .from("movements")
+    .select("id,reference_number")
+    .eq("id", movementId)
+    .maybeSingle();
+  return data || null;
 }
 
 function roundMoneyValue(value) {
@@ -3165,17 +3179,31 @@ function setBatchClosePresetState(value) {
           );
           if (rpcErr) throw rpcErr;
 
-          const { data: savedMovement } = await supabase
-            .from("movements")
-            .select("id,reference_number")
-            .eq("id", newId)
-            .maybeSingle();
-          const successText = `Guardado: ${movementLabel(submitMode)} | ID ${movementShortId(savedMovement || newId)}`;
-          state.captureFlashNotice = { kind: "ok", text: successText };
+          const savedMovement = await Promise.race([
+            fetchSavedMovementReference(newId),
+            new Promise((resolve) => window.setTimeout(() => resolve(null), POST_SAVE_REFERENCE_WAIT_MS)),
+          ]);
+          const successText = movementSavedText(submitMode, savedMovement || newId);
+          state.captureFlashNotice = { kind: "ok", text: successText, movement_id: newId };
           state.captureNextMode = submitMode;
           msg.replaceChildren(notice("ok", successText));
           resetCaptureFormAfterSave();
           shouldRefreshCaptureAfterSuccess = true;
+          if (!savedMovement) {
+            void fetchSavedMovementReference(newId)
+              .then((resolvedMovement) => {
+                if (!resolvedMovement?.reference_number) return;
+                const hydratedText = movementSavedText(submitMode, resolvedMovement);
+                if (msg.isConnected) {
+                  msg.replaceChildren(notice("ok", hydratedText));
+                }
+                state.captureFlashNotice = { kind: "ok", text: hydratedText, movement_id: newId };
+                if (isActive()) scheduleSafeRender();
+              })
+              .catch(() => {
+                // Ignore delayed lookup failures; the movement is already saved.
+              });
+          }
         } catch (e) {
           // If timeout happened but insert actually reached DB, avoid duplicate capture on retry.
           if (movementId) {
