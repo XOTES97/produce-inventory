@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.05";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.05";
+import * as cfg from "./config.js?v=2026.03.19.06";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.06";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.05";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.06";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -80,9 +80,10 @@ const CASH_ADJUSTMENT_META = {
   },
   retiro_boveda: {
     label: "Retiros a bóveda",
-    affectsCash: true,
-    fixedSign: "negative",
+    affectsCash: false,
+    fixedSign: "positive",
     defaultDirection: "salida",
+    syncFromVaultWithdrawals: true,
   },
   deposito_retiro_parcial: {
     label: "Depositos / retiros parciales",
@@ -1151,6 +1152,40 @@ function defaultCashDenominationLines() {
   return rows;
 }
 
+function cashDenominationKey(row) {
+  return `${String(row?.currency || "").toUpperCase()}|${String(row?.kind || "").toLowerCase()}|${Number(row?.denomination || 0)}`;
+}
+
+function normalizeCashDenominationLines(rows) {
+  const defaults = defaultCashDenominationLines();
+  const existing = new Map((Array.isArray(rows) ? rows : []).map((row) => [cashDenominationKey(row), row]));
+  return defaults.map((row) => {
+    const found = existing.get(cashDenominationKey(row)) || {};
+    return {
+      currency: row.currency,
+      kind: row.kind,
+      denomination: row.denomination,
+      quantity: found.quantity != null ? String(found.quantity) : "",
+    };
+  });
+}
+
+function defaultCashVaultWithdrawal() {
+  return {
+    reference_label: "",
+    note: "",
+    denomination_lines: defaultCashDenominationLines(),
+  };
+}
+
+function normalizeCashVaultWithdrawal(row = {}) {
+  return {
+    reference_label: trimmedOrEmpty(row?.reference_label),
+    note: trimmedOrEmpty(row?.note),
+    denomination_lines: normalizeCashDenominationLines(row?.denomination_lines),
+  };
+}
+
 function defaultCashAdjustments() {
   return CASH_ADJUSTMENT_ORDER.map((adjustmentType) => ({
     adjustment_type: adjustmentType,
@@ -1195,6 +1230,7 @@ function createCashCutDraft() {
     versatil_cash_count_amount: "",
     product_lines: Array.from({ length: CASH_PRODUCT_LINE_MIN }, () => defaultCashProductLine()),
     denomination_lines: defaultCashDenominationLines(),
+    vault_withdrawals: [defaultCashVaultWithdrawal()],
     adjustment_lines: defaultCashAdjustments(),
   };
 }
@@ -1209,6 +1245,10 @@ function ensureCashDraft() {
   if (!Array.isArray(draft.denomination_lines) || draft.denomination_lines.length === 0) {
     draft.denomination_lines = defaultCashDenominationLines();
   }
+  draft.denomination_lines = normalizeCashDenominationLines(draft.denomination_lines);
+  if (!Array.isArray(draft.vault_withdrawals)) draft.vault_withdrawals = [defaultCashVaultWithdrawal()];
+  draft.vault_withdrawals = draft.vault_withdrawals.map((row) => normalizeCashVaultWithdrawal(row));
+  if (draft.vault_withdrawals.length === 0) draft.vault_withdrawals.push(defaultCashVaultWithdrawal());
   if (!Array.isArray(draft.adjustment_lines) || draft.adjustment_lines.length === 0) {
     draft.adjustment_lines = defaultCashAdjustments();
   }
@@ -1252,6 +1292,45 @@ function resetCashDraft() {
   state.cashDraft = createCashCutDraft();
 }
 
+function computeCashDenominationSet(lines, exchangeRate) {
+  let totalMxnBillsAmount = 0;
+  let totalMxnCoinsAmount = 0;
+  let totalUsdAmount = 0;
+  const normalizedLines = (lines || []).map((row) => {
+    const currency = String(row?.currency || "").toUpperCase();
+    const kind = String(row?.kind || "").toLowerCase();
+    const denomination = roundMoneyValue(numberFromInput(row?.denomination, 0));
+    const quantity = Math.max(0, integerFromInput(row?.quantity, 0));
+    const lineTotal = roundMoneyValue(denomination * quantity);
+
+    if (currency === "MXN" && kind === "bill") totalMxnBillsAmount += lineTotal;
+    else if (currency === "MXN") totalMxnCoinsAmount += lineTotal;
+    else totalUsdAmount += lineTotal;
+
+    return {
+      currency,
+      kind,
+      denomination,
+      quantity,
+      line_total: lineTotal,
+    };
+  });
+
+  const totalUsdMxnAmount = roundMoneyValue(totalUsdAmount * exchangeRate);
+  const totalMxnAmount = roundMoneyValue(totalMxnBillsAmount + totalMxnCoinsAmount);
+  const totalComparableAmount = roundMoneyValue(totalMxnAmount + totalUsdMxnAmount);
+
+  return {
+    lines: normalizedLines,
+    totalMxnBillsAmount: roundMoneyValue(totalMxnBillsAmount),
+    totalMxnCoinsAmount: roundMoneyValue(totalMxnCoinsAmount),
+    totalMxnAmount,
+    totalUsdAmount: roundMoneyValue(totalUsdAmount),
+    totalUsdMxnAmount,
+    totalComparableAmount,
+  };
+}
+
 function computeCashCutDraft(draft) {
   const safeDraft = draft || ensureCashDraft();
   const exchangeRate = roundRateValue(numberFromInput(safeDraft.exchange_rate, CASH_DEFAULT_EXCHANGE_RATE));
@@ -1278,31 +1357,40 @@ function computeCashCutDraft(draft) {
     };
   });
 
-  let totalMxnBillsAmount = 0;
-  let totalMxnCoinsAmount = 0;
-  let totalUsdAmount = 0;
-  const denominationLines = (safeDraft.denomination_lines || []).map((row) => {
-    const currency = String(row?.currency || "").toUpperCase();
-    const kind = String(row?.kind || "").toLowerCase();
-    const denomination = roundMoneyValue(numberFromInput(row?.denomination, 0));
-    const quantity = Math.max(0, integerFromInput(row?.quantity, 0));
-    const lineTotal = roundMoneyValue(denomination * quantity);
+  const countedCashSet = computeCashDenominationSet(safeDraft.denomination_lines, exchangeRate);
+  const denominationLines = countedCashSet.lines;
+  const totalMxnBillsAmount = countedCashSet.totalMxnBillsAmount;
+  const totalMxnCoinsAmount = countedCashSet.totalMxnCoinsAmount;
+  const totalUsdAmount = countedCashSet.totalUsdAmount;
+  const totalUsdMxnAmount = countedCashSet.totalUsdMxnAmount;
+  const totalCountedCashAmount = countedCashSet.totalComparableAmount;
 
-    if (currency === "MXN" && kind === "bill") totalMxnBillsAmount += lineTotal;
-    else if (currency === "MXN") totalMxnCoinsAmount += lineTotal;
-    else totalUsdAmount += lineTotal;
+  const vaultWithdrawals = (safeDraft.vault_withdrawals || []).map((row, index) => {
+    const denominationSet = computeCashDenominationSet(row?.denomination_lines, exchangeRate);
+    const hasContent =
+      !!trimmedOrEmpty(row?.reference_label) ||
+      !!trimmedOrEmpty(row?.note) ||
+      denominationSet.lines.some((entry) => Number(entry.quantity || 0) > 0);
 
     return {
-      currency,
-      kind,
-      denomination,
-      quantity,
-      line_total: lineTotal,
+      index,
+      reference_label: trimmedOrEmpty(row?.reference_label),
+      note: trimmedOrEmpty(row?.note),
+      denomination_lines: denominationSet.lines,
+      total_mxn_bills_amount: denominationSet.totalMxnBillsAmount,
+      total_mxn_coins_amount: denominationSet.totalMxnCoinsAmount,
+      total_mxn_amount: denominationSet.totalMxnAmount,
+      total_usd_amount: denominationSet.totalUsdAmount,
+      total_usd_mxn_amount: denominationSet.totalUsdMxnAmount,
+      total_comparable_amount: denominationSet.totalComparableAmount,
+      has_content: hasContent,
     };
   });
-
-  const totalUsdMxnAmount = roundMoneyValue(totalUsdAmount * exchangeRate);
-  const totalCountedCashAmount = roundMoneyValue(totalMxnBillsAmount + totalMxnCoinsAmount + totalUsdMxnAmount);
+  const visibleVaultWithdrawals = vaultWithdrawals.filter((row) => row.has_content);
+  const totalVaultWithdrawalsAmount = roundMoneyValue(
+    visibleVaultWithdrawals.reduce((sum, row) => sum + Number(row.total_comparable_amount || 0), 0)
+  );
+  const totalDeliveredCashAmount = roundMoneyValue(totalCountedCashAmount + totalVaultWithdrawalsAmount);
 
   let totalCashAdjustmentsAmount = 0;
   let identifiedTransfersAmount = 0;
@@ -1310,7 +1398,11 @@ function computeCashCutDraft(draft) {
   const adjustments = CASH_ADJUSTMENT_ORDER.map((type) => {
     const meta = CASH_ADJUSTMENT_META[type];
     const row = (safeDraft.adjustment_lines || []).find((item) => item?.adjustment_type === type) || {};
-    const rawAmount = meta?.syncFromRefunds ? refundReceiptsAmount : roundMoneyValue(numberFromInput(row?.amount, 0));
+    const rawAmount = meta?.syncFromRefunds
+      ? refundReceiptsAmount
+      : meta?.syncFromVaultWithdrawals
+        ? totalVaultWithdrawalsAmount
+        : roundMoneyValue(numberFromInput(row?.amount, 0));
     const direction = row?.direction || meta?.defaultDirection || "entrada";
     let signedAmount = rawAmount;
     if (meta?.fixedSign === "negative") signedAmount = -rawAmount;
@@ -1318,6 +1410,9 @@ function computeCashCutDraft(draft) {
     else signedAmount = rawAmount;
     signedAmount = roundMoneyValue(signedAmount);
     if (type === "fondo_inicial") initialFundAmount = rawAmount;
+    else if (type === "retiro_boveda") {
+      // Vault withdrawals remain part of the delivered cash and do not reduce expected cash.
+    }
     else if (meta?.affectsCash) totalCashAdjustmentsAmount += signedAmount;
     else identifiedTransfersAmount += signedAmount;
     return {
@@ -1329,7 +1424,7 @@ function computeCashCutDraft(draft) {
       affects_cash: !!meta?.affectsCash,
       support_reference: trimmedOrEmpty(row?.support_reference),
       note: trimmedOrEmpty(row?.note),
-      is_amount_read_only: !!meta?.syncFromRefunds,
+      is_amount_read_only: !!meta?.syncFromRefunds || !!meta?.syncFromVaultWithdrawals,
       fixed_sign: meta?.fixedSign || "direction",
     };
   });
@@ -1339,8 +1434,8 @@ function computeCashCutDraft(draft) {
   identifiedTransfersAmount = roundMoneyValue(identifiedTransfersAmount);
 
   const expectedCashAmount = roundMoneyValue(netCashSalesAmount + totalCashAdjustmentsAmount);
-  const comparableCountedCashAmount = roundMoneyValue(totalCountedCashAmount);
-  const differenceAmount = roundMoneyValue(totalCountedCashAmount - versatilCashCountAmount);
+  const comparableCountedCashAmount = roundMoneyValue(totalDeliveredCashAmount);
+  const differenceAmount = roundMoneyValue(totalDeliveredCashAmount - versatilCashCountAmount);
 
   return {
     exchangeRate,
@@ -1361,11 +1456,15 @@ function computeCashCutDraft(draft) {
     productLines,
     denominationLines,
     adjustments,
+    vaultWithdrawals,
+    visibleVaultWithdrawals,
     totalMxnBillsAmount: roundMoneyValue(totalMxnBillsAmount),
     totalMxnCoinsAmount: roundMoneyValue(totalMxnCoinsAmount),
     totalUsdAmount: roundMoneyValue(totalUsdAmount),
     totalUsdMxnAmount,
     totalCountedCashAmount,
+    totalVaultWithdrawalsAmount,
+    totalDeliveredCashAmount,
     initialFundAmount,
     comparableCountedCashAmount,
     totalCashAdjustmentsAmount,
@@ -1391,6 +1490,10 @@ function normalizeCashCutError(message) {
       return "Las denominaciones del arqueo no tienen un formato válido.";
     case "cash_cut_adjustments_invalid":
       return "Los ajustes del cajero no tienen un formato válido.";
+    case "cash_cut_vault_withdrawals_invalid":
+      return "Los retiros a bóveda no tienen un formato válido.";
+    case "cash_cut_vault_withdrawal_denom_invalid":
+      return "Hay una denominación inválida dentro de un retiro a bóveda.";
     case "cash_cut_adjustment_amount_invalid":
       return "Hay un ajuste con importe inválido.";
     case "cash_cut_product_label_required":
@@ -1423,16 +1526,19 @@ function cashDifferenceText(value) {
 }
 
 function cashComparableCountedAmount(source) {
-  return roundMoneyValue(Number(source?.total_counted_cash_amount || 0));
+  if (source?.delivered_cash_amount != null) return roundMoneyValue(Number(source.delivered_cash_amount || 0));
+  return roundMoneyValue(Number(source?.total_counted_cash_amount || 0) + Number(source?.vault_withdrawals_total_amount || 0));
 }
 
 function cashAdjustmentEffectText(row) {
   if (row?.adjustment_type === "fondo_inicial") return "Base fija / no afecta diferencia";
+  if (row?.adjustment_type === "retiro_boveda") return "Incluido en efectivo entregado";
   if (!row?.affects_cash) return "No entra a efectivo";
   return fmtSignedMoney(row.signed_amount);
 }
 
 function cashAdjustmentEffectClass(row) {
+  if (row?.adjustment_type === "retiro_boveda") return "mono muted";
   if (!row?.affects_cash) return "mono muted";
   return `mono ${Number(row?.signed_amount || 0) < 0 ? "delta-neg" : "delta-pos"}`;
 }
@@ -5621,6 +5727,7 @@ async function pageCash(pageCtx) {
   const formMsg = h("div");
   const productRowsWrap = h("div", { class: "col" });
   const denominationWrap = h("div", { class: "cash-denomination-grid" });
+  const vaultWithdrawalsWrap = h("div", { class: "col" });
   const adjustmentsWrap = h("div", { class: "col" });
   const summaryWrap = h("div", { class: "cash-summary-grid" });
   const posWarningWrap = h("div", { class: "cash-pos-warning-wrap" });
@@ -5634,6 +5741,8 @@ async function pageCash(pageCtx) {
   const productParticipationEls = [];
   const productAmountEls = [];
   const denominationTotalEls = [];
+  const vaultWithdrawalTotalEls = [];
+  let vaultWithdrawalsGrandTotalEl = null;
   const adjustmentAmountEls = [];
   const adjustmentDirectionEls = [];
   const adjustmentEffectEls = [];
@@ -5776,6 +5885,16 @@ async function pageCash(pageCtx) {
       }
     });
 
+    computed.vaultWithdrawals.forEach((row, index) => {
+      const totalEl = vaultWithdrawalTotalEls[index];
+      if (totalEl) {
+        totalEl.textContent = `Total retiro comparable: ${fmtMoney(row.total_comparable_amount)}`;
+      }
+    });
+    if (vaultWithdrawalsGrandTotalEl) {
+      vaultWithdrawalsGrandTotalEl.textContent = fmtMoney(computed.totalVaultWithdrawalsAmount);
+    }
+
     if (Math.abs(computed.invoicedSalesMismatchAmount) >= 0.005) {
       posWarningWrap.replaceChildren(
         h("div", { class: "cash-pos-warning" }, [
@@ -5797,9 +5916,10 @@ async function pageCash(pageCtx) {
     setTextSummary("countedMxn", "Efectivo contado MXN", fmtMoney(computed.totalMxnBillsAmount + computed.totalMxnCoinsAmount));
     setTextSummary("countedUsd", "USD contado", fmtMoney(computed.totalUsdAmount, "USD"));
     setTextSummary("countedUsdMxn", "USD contado en MXN", fmtMoney(computed.totalUsdMxnAmount));
-    setTextSummary("physicalTotal", "Total fisico contado", fmtMoney(computed.totalCountedCashAmount));
+    setTextSummary("physicalTotal", "Efectivo contado en caja", fmtMoney(computed.totalCountedCashAmount));
     setTextSummary("initialFund", "Fondo de caja inicial", fmtMoney(computed.initialFundAmount));
-    setTextSummary("comparablePhysical", "Fisico para comparacion", fmtMoney(computed.comparableCountedCashAmount));
+    setTextSummary("vaultWithdrawals", "Retiros a bóveda", fmtMoney(computed.totalVaultWithdrawalsAmount));
+    setTextSummary("comparablePhysical", "Total efectivo entregado", fmtMoney(computed.comparableCountedCashAmount));
     setTextSummary("versatilCash", "Arqueo efectivo Versatil", fmtMoney(computed.versatilCashCountAmount));
     setTextSummary("expectedCash", "Esperado calculado", fmtMoney(computed.expectedCashAmount));
     setTextSummary("adjustments", "Ajustes que afectan efectivo", fmtSignedMoney(computed.totalCashAdjustmentsAmount));
@@ -5937,6 +6057,116 @@ async function pageCash(pageCtx) {
     );
   }
 
+  function renderVaultWithdrawalDenominationSection(title, currency, rows) {
+    const table = h("table", { class: "table" }, [
+      h("thead", {}, [
+        h("tr", {}, [h("th", { text: title }), h("th", { text: "Cantidad" }), h("th", { text: "Total" })]),
+      ]),
+      h(
+        "tbody",
+        {},
+        rows.map((row) => {
+          const quantityInput = createInput("number", row.quantity, { min: "0", step: "1", inputmode: "numeric" });
+          const totalValue = h("div", { class: "mono", text: fmtMoney(0, currency) });
+          quantityInput.addEventListener("input", () => {
+            clearCashFlash();
+            row.quantity = quantityInput.value;
+            totalValue.textContent = fmtMoney(roundMoneyValue(Number(row.denomination || 0) * Math.max(0, integerFromInput(row.quantity, 0))), currency);
+            refreshComputed();
+          });
+          totalValue.textContent = fmtMoney(roundMoneyValue(Number(row.denomination || 0) * Math.max(0, integerFromInput(row.quantity, 0))), currency);
+          return h("tr", {}, [
+            h("td", { class: "mono", text: currency === "USD" ? fmtMoney(row.denomination, "USD") : fmtMoney(row.denomination) }),
+            h("td", {}, [quantityInput]),
+            h("td", {}, [totalValue]),
+          ]);
+        })
+      ),
+    ]);
+    return h("div", { class: "card col" }, [h("div", { class: "h1", text: title }), tableScroll(table)]);
+  }
+
+  function renderVaultWithdrawals() {
+    vaultWithdrawalTotalEls.length = 0;
+    const rows = draft.vault_withdrawals.map((withdrawal, index) => {
+      const referenceInput = createInput("text", withdrawal.reference_label, { placeholder: "Referencia / sobre (opcional)" });
+      const noteInput = createInput("text", withdrawal.note, { placeholder: "Observación (opcional)" });
+      const subtotalValue = h("div", { class: "cash-vault-total-value mono", text: fmtMoney(0) });
+      const mxnBills = withdrawal.denomination_lines.filter((row) => row.currency === "MXN" && row.kind === "bill");
+      const mxnCoins = withdrawal.denomination_lines.filter((row) => row.currency === "MXN" && row.kind === "coin");
+      const usdRows = withdrawal.denomination_lines.filter((row) => row.currency === "USD");
+      const removeBtn = h(
+        "button",
+        {
+          class: "btn btn-ghost",
+          type: "button",
+          onclick: () => {
+            draft.vault_withdrawals.splice(index, 1);
+            if (draft.vault_withdrawals.length === 0) draft.vault_withdrawals.push(defaultCashVaultWithdrawal());
+            renderVaultWithdrawals();
+            refreshComputed();
+          },
+        },
+        ["Quitar retiro"]
+      );
+      if (draft.vault_withdrawals.length <= 1) removeBtn.disabled = true;
+
+      referenceInput.addEventListener("input", () => {
+        clearCashFlash();
+        withdrawal.reference_label = referenceInput.value;
+      });
+      noteInput.addEventListener("input", () => {
+        clearCashFlash();
+        withdrawal.note = noteInput.value;
+      });
+
+      vaultWithdrawalTotalEls[index] = subtotalValue;
+
+      return h("div", { class: "card col" }, [
+        h("div", { class: "row-wrap" }, [
+          h("div", { class: "h1", text: `Retiro a bóveda ${index + 1}` }),
+          h("div", { class: "spacer" }),
+          removeBtn,
+        ]),
+        h("div", { class: "grid2" }, [cashField("Referencia / sobre", referenceInput), cashField("Observación", noteInput)]),
+        h("div", { class: "cash-denomination-grid" }, [
+          renderVaultWithdrawalDenominationSection("Bóveda MXN - Billetes", "MXN", mxnBills),
+          renderVaultWithdrawalDenominationSection("Bóveda MXN - Monedas", "MXN", mxnCoins),
+          renderVaultWithdrawalDenominationSection("Bóveda USD", "USD", usdRows),
+        ]),
+        h("div", { class: "cash-vault-total-row" }, [
+          h("strong", { text: "Total retiro a bóveda" }),
+          subtotalValue,
+        ]),
+      ]);
+    });
+
+    const addBtn = h(
+      "button",
+      {
+        class: "btn",
+        type: "button",
+        onclick: () => {
+          draft.vault_withdrawals.push(defaultCashVaultWithdrawal());
+          renderVaultWithdrawals();
+          refreshComputed();
+        },
+      },
+      ["Agregar retiro a bóveda adicional"]
+    );
+    vaultWithdrawalsGrandTotalEl = h("div", { class: "cash-vault-grand-total-value mono", text: fmtMoney(0) });
+
+    vaultWithdrawalsWrap.replaceChildren(
+      h("div", { class: "muted", text: "Captura el efectivo retirado a bóveda. Este dinero sí cuenta como parte del corte entregado y se compara contra Versatil junto con el efectivo restante en caja." }),
+      ...rows,
+      h("div", { class: "row-wrap" }, [addBtn]),
+      h("div", { class: "cash-vault-grand-total" }, [
+        h("strong", { text: "Total retiros a bóveda" }),
+        vaultWithdrawalsGrandTotalEl,
+      ]),
+    );
+  }
+
   function renderAdjustments() {
     adjustmentAmountEls.length = 0;
     adjustmentDirectionEls.length = 0;
@@ -5992,7 +6222,7 @@ async function pageCash(pageCtx) {
             class: "muted",
             text:
               adjustmentType === "retiro_boveda"
-                ? "Salida a bóveda. Se descuenta automáticamente del efectivo esperado."
+                ? "Control informativo. El total viene del desglose de bóveda y sí entra al efectivo entregado."
                 : adjustmentType === "transferencia_identificada"
                   ? "Se registra para control, pero no aumenta el efectivo esperado."
                   : adjustmentType === "reembolso_dia"
@@ -6087,7 +6317,7 @@ async function pageCash(pageCtx) {
         ]),
         h("div", {
           class: "muted",
-          text: `Fisico ${fmtMoney(row.total_counted_cash_amount)} | Versatil ${fmtMoney(row.versatil_cash_count_amount)} | Transferencias ${fmtSignedMoney(row.identified_transfers_amount)}`,
+          text: `Caja ${fmtMoney(row.total_counted_cash_amount)} | Bóveda ${fmtMoney(row.vault_withdrawals_total_amount)} | Entregado ${fmtMoney(cashComparableCountedAmount(row))} | Versatil ${fmtMoney(row.versatil_cash_count_amount)}`,
         }),
       ]);
       fragment.appendChild(card);
@@ -6106,6 +6336,17 @@ async function pageCash(pageCtx) {
     const displayUsd = usd.filter((row) => Number(row.quantity || 0) > 0);
     const visibleProductLines = productLines.filter((row) => row.product_label || Number(row.amount || 0) > 0 || row.note);
     const visibleAdjustments = adjustments.filter((row) => Number(row.amount || 0) > 0 || row.support_reference || row.note || row.adjustment_type === "fondo_inicial");
+    const visibleVaultWithdrawals = (Array.isArray(cut.vault_withdrawals) ? cut.vault_withdrawals : [])
+      .map((row, index) => ({
+        index,
+        reference_label: row?.reference_label || "",
+        note: row?.note || "",
+        denomination_lines: Array.isArray(row?.denomination_lines) ? row.denomination_lines : [],
+        total_comparable_amount: Number(row?.total_comparable_amount || 0),
+        total_mxn_amount: Number(row?.total_mxn_amount || 0),
+        total_usd_amount: Number(row?.total_usd_amount || 0),
+      }))
+      .filter((row) => row.reference_label || row.note || row.total_comparable_amount > 0 || row.denomination_lines.some((entry) => Number(entry?.quantity || 0) > 0));
     const differenceTone = cashDifferenceKind(cut.difference_amount);
     const invoicedMismatchAmount = roundMoneyValue((Number(cut.credit_invoiced_sales_amount || 0) + Number(cut.cash_invoiced_sales_amount || 0)) - Number(cut.total_invoiced_sales_amount || 0));
 
@@ -6207,18 +6448,37 @@ async function pageCash(pageCtx) {
     ]);
 
     const summary = h("div", { class: "cash-report-summary" }, [
-      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Efectivo contado MXN" }), h("strong", { class: "mono", text: fmtMoney(Number(cut.total_mxn_bills_amount || 0) + Number(cut.total_mxn_coins_amount || 0)) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Efectivo contado en caja MXN" }), h("strong", { class: "mono", text: fmtMoney(Number(cut.total_mxn_bills_amount || 0) + Number(cut.total_mxn_coins_amount || 0)) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado (USD)" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_amount, "USD") })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "USD contado en MXN" }), h("strong", { class: "mono", text: fmtMoney(cut.total_usd_mxn_amount) })]),
-      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total fisico contado" }), h("strong", { class: "mono", text: fmtMoney(cut.total_counted_cash_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total físico contado en caja" }), h("strong", { class: "mono", text: fmtMoney(cut.total_counted_cash_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fondo de caja inicial" }), h("strong", { class: "mono", text: fmtMoney(cut.initial_fund_amount) })]),
-      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Fisico para comparacion" }), h("strong", { class: "mono", text: fmtMoney(cashComparableCountedAmount(cut)) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Retiros a bóveda" }), h("strong", { class: "mono", text: fmtMoney(cut.vault_withdrawals_total_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total efectivo entregado" }), h("strong", { class: "mono", text: fmtMoney(cashComparableCountedAmount(cut)) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Arqueo efectivo Versatil" }), h("strong", { class: "mono", text: fmtMoney(cut.versatil_cash_count_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado calculado" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Ajustes / otros movimientos" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.total_cash_adjustments_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Transferencias identificadas" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.identified_transfers_amount) })]),
       h("div", { class: `cash-report-summary-row cash-report-diff cash-diff-${differenceTone}` }, [h("span", { text: "Diferencia (sobrante/faltante vs Versatil)" }), h("strong", { class: "mono", text: cashDifferenceText(cut.difference_amount) })]),
     ]);
+
+    const vaultWithdrawalCards = visibleVaultWithdrawals.length
+      ? h("div", { class: "cash-print-grid cash-print-grid-2" }, visibleVaultWithdrawals.map((row) => {
+          const billsRows = row.denomination_lines.filter((entry) => entry.currency === "MXN" && entry.kind === "bill" && Number(entry.quantity || 0) > 0);
+          const coinRows = row.denomination_lines.filter((entry) => entry.currency === "MXN" && entry.kind === "coin" && Number(entry.quantity || 0) > 0);
+          const usdRows = row.denomination_lines.filter((entry) => entry.currency === "USD" && Number(entry.quantity || 0) > 0);
+          return h("div", { class: "card col" }, [
+            h("div", { class: "h1", text: row.reference_label || `Retiro a bóveda ${row.index + 1}` }),
+            row.note ? h("div", { class: "muted", text: row.note }) : null,
+            h("div", { class: "cash-print-grid cash-print-grid-3" }, [
+              h("div", { class: "col" }, [h("div", { class: "muted", text: "MXN - Billetes" }), tableScroll(denominationTable(billsRows, "Billete", "MXN"))]),
+              h("div", { class: "col" }, [h("div", { class: "muted", text: "MXN - Monedas" }), tableScroll(denominationTable(coinRows, "Moneda", "MXN"))]),
+              h("div", { class: "col" }, [h("div", { class: "muted", text: "USD" }), tableScroll(denominationTable(usdRows, "Denominación", "USD"))]),
+            ]),
+            h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total retiro a bóveda" }), h("strong", { class: "mono", text: fmtMoney(row.total_comparable_amount) })]),
+          ].filter(Boolean));
+        }))
+      : null;
 
     detailTitle.textContent = `Reporte imprimible | ${cashCutShortId(cut)}`;
     const productCard = visibleProductLines.length
@@ -6238,6 +6498,12 @@ async function pageCash(pageCtx) {
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable), posFacturadasWarning].filter(Boolean)),
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Controles adicionales del cajero" }), tableScroll(adjustmentsTable)]),
         ]),
+        vaultWithdrawalCards
+          ? h("div", { class: "col" }, [
+              h("div", { class: "h1", text: "Retiros a bóveda" }),
+              vaultWithdrawalCards,
+            ])
+          : null,
         h("div", { class: "cash-print-grid cash-print-grid-3" }, [
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Billetes" }), tableScroll(denominationTable(displayBills, "Billete", "MXN"))]),
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Monedas" }), tableScroll(denominationTable(displayCoins, "Moneda", "MXN"))]),
@@ -6259,7 +6525,7 @@ async function pageCash(pageCtx) {
     try {
       let query = supabase
         .from("cash_cuts")
-        .select("id,business_date,daily_sequence,cut_type,cashier_employee_id,total_counted_cash_amount,initial_fund_amount,versatil_cash_count_amount,expected_cash_amount,difference_amount,identified_transfers_amount,status,created_at")
+        .select("id,business_date,daily_sequence,cut_type,cashier_employee_id,total_counted_cash_amount,vault_withdrawals_total_amount,delivered_cash_amount,initial_fund_amount,versatil_cash_count_amount,expected_cash_amount,difference_amount,identified_transfers_amount,status,created_at")
         .order("business_date", { ascending: false })
         .order("daily_sequence", { ascending: false })
         .limit(CASH_LIST_PAGE_SIZE);
@@ -6363,6 +6629,16 @@ async function pageCash(pageCtx) {
         support_reference: row.support_reference || null,
         note: row.note || null,
       }));
+      const vaultWithdrawals = computed.visibleVaultWithdrawals.map((row) => ({
+        reference_label: row.reference_label || null,
+        note: row.note || null,
+        denomination_lines: row.denomination_lines.map((entry) => ({
+          currency: entry.currency,
+          kind: entry.kind,
+          denomination: entry.denomination,
+          quantity: entry.quantity,
+        })),
+      }));
       const cutPayload = {
         business_date: draft.business_date,
         branch_name: trimmedOrEmpty(draft.branch_name) || CASH_DEFAULT_BRANCH,
@@ -6391,6 +6667,7 @@ async function pageCash(pageCtx) {
         iva_zero_amount: computed.ivaZeroAmount,
         ticket_total_amount: computed.ticketTotalAmount,
         versatil_cash_count_amount: computed.versatilCashCountAmount,
+        vault_withdrawals: vaultWithdrawals,
       };
 
       const { data, error } = await supabase.rpc("create_cash_cut", {
@@ -6581,6 +6858,9 @@ async function pageCash(pageCtx) {
     h("div", { class: "h1", text: "Controles adicionales del cajero" }),
     adjustmentsWrap,
     h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Retiros a bóveda" }),
+    vaultWithdrawalsWrap,
+    h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Conciliacion automatica" }),
     summaryWrap,
     h("div", { class: "row-wrap" }, [submitBtn, resetBtn]),
@@ -6621,12 +6901,14 @@ async function pageCash(pageCtx) {
   renderProductRows();
   renderDenominations();
   renderAdjustments();
+  renderVaultWithdrawals();
   summaryWrap.replaceChildren(
     buildSummaryCard("countedMxn", "Efectivo contado MXN"),
     buildSummaryCard("countedUsd", "USD contado"),
     buildSummaryCard("countedUsdMxn", "USD contado en MXN"),
     buildSummaryCard("physicalTotal", "Total fisico contado"),
     buildSummaryCard("initialFund", "Fondo de caja inicial"),
+    buildSummaryCard("vaultWithdrawals", "Retiros a bóveda"),
     buildSummaryCard("comparablePhysical", "Fisico para comparacion"),
     buildSummaryCard("versatilCash", "Arqueo efectivo Versatil"),
     buildSummaryCard("expectedCash", "Esperado calculado"),

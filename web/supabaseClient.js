@@ -1,4 +1,4 @@
-import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./config.js?v=2026.03.19.05";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./config.js?v=2026.03.19.06";
 
 // Using ESM build from jsdelivr to avoid a build step (Node not required).
 // When you later move to a bundled app, replace this with a normal npm dependency.

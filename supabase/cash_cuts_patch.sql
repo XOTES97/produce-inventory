@@ -82,6 +82,9 @@ create table if not exists public.cash_cuts (
   total_usd_amount numeric(12, 2) not null default 0,
   total_usd_mxn_amount numeric(12, 2) not null default 0,
   total_counted_cash_amount numeric(12, 2) not null default 0,
+  vault_withdrawals jsonb not null default '[]'::jsonb,
+  vault_withdrawals_total_amount numeric(12, 2) not null default 0,
+  delivered_cash_amount numeric(12, 2) not null default 0,
   total_cash_adjustments_amount numeric(12, 2) not null default 0,
   identified_transfers_amount numeric(12, 2) not null default 0,
   initial_fund_amount numeric(12, 2) not null default 0,
@@ -111,6 +114,15 @@ alter table public.cash_cuts
 
 alter table public.cash_cuts
   add column if not exists total_invoiced_sales_amount numeric(12, 2) not null default 0;
+
+alter table public.cash_cuts
+  add column if not exists vault_withdrawals jsonb not null default '[]'::jsonb;
+
+alter table public.cash_cuts
+  add column if not exists vault_withdrawals_total_amount numeric(12, 2) not null default 0;
+
+alter table public.cash_cuts
+  add column if not exists delivered_cash_amount numeric(12, 2) not null default 0;
 
 update public.cash_cuts c
 set workspace_id = wu.workspace_id
@@ -190,6 +202,37 @@ create table if not exists public.cash_cut_adjustments (
 create index if not exists cash_cut_adjustments_cut_idx
   on public.cash_cut_adjustments (cash_cut_id, sort_order asc, id asc);
 
+update public.cash_cuts
+set vault_withdrawals = '[]'::jsonb
+where vault_withdrawals is null;
+
+update public.cash_cut_adjustments
+set affects_cash = false,
+    signed_amount = amount
+where adjustment_type = 'retiro_boveda';
+
+with adjustment_rollup as (
+  select
+    cash_cut_id,
+    round(coalesce(sum(case when adjustment_type = 'fondo_inicial' then amount else 0 end), 0), 2) as initial_fund_amount,
+    round(coalesce(sum(case when affects_cash and adjustment_type <> 'fondo_inicial' then signed_amount else 0 end), 0), 2) as total_cash_adjustments_amount,
+    round(coalesce(sum(case when adjustment_type = 'transferencia_identificada' then signed_amount else 0 end), 0), 2) as identified_transfers_amount,
+    round(coalesce(sum(case when adjustment_type = 'retiro_boveda' then amount else 0 end), 0), 2) as vault_withdrawals_total_amount
+  from public.cash_cut_adjustments
+  group by cash_cut_id
+)
+update public.cash_cuts c
+set
+  initial_fund_amount = coalesce(ar.initial_fund_amount, 0),
+  total_cash_adjustments_amount = coalesce(ar.total_cash_adjustments_amount, 0),
+  identified_transfers_amount = coalesce(ar.identified_transfers_amount, 0),
+  vault_withdrawals_total_amount = coalesce(ar.vault_withdrawals_total_amount, 0),
+  delivered_cash_amount = round(coalesce(c.total_counted_cash_amount, 0) + coalesce(ar.vault_withdrawals_total_amount, 0), 2),
+  expected_cash_amount = round(coalesce(c.net_cash_sales_amount, 0) + coalesce(ar.total_cash_adjustments_amount, 0), 2),
+  difference_amount = round((coalesce(c.total_counted_cash_amount, 0) + coalesce(ar.vault_withdrawals_total_amount, 0)) - coalesce(c.versatil_cash_count_amount, 0), 2)
+from adjustment_rollup ar
+where c.id = ar.cash_cut_id;
+
 create or replace function public.actor_can_access_cash_cut(target_cash_cut_id uuid)
 returns boolean
 language sql
@@ -245,6 +288,9 @@ declare
   v_total_usd_amount numeric(12, 2) := 0;
   v_total_usd_mxn_amount numeric(12, 2) := 0;
   v_total_counted_cash_amount numeric(12, 2) := 0;
+  v_vault_withdrawals jsonb := '[]'::jsonb;
+  v_vault_withdrawals_total_amount numeric(12, 2) := 0;
+  v_delivered_cash_amount numeric(12, 2) := 0;
   v_total_cash_adjustments_amount numeric(12, 2) := 0;
   v_identified_transfers_amount numeric(12, 2) := 0;
   v_initial_fund_amount numeric(12, 2) := 0;
@@ -268,6 +314,17 @@ declare
   v_affects_cash boolean;
   v_support_reference text;
   v_adjustment_note text;
+  v_vault_entry jsonb;
+  v_vault_reference text;
+  v_vault_note text;
+  v_vault_denomination_lines jsonb;
+  v_vault_line_rows jsonb := '[]'::jsonb;
+  v_vault_item_rows jsonb := '[]'::jsonb;
+  v_vault_total_mxn_bills_amount numeric(12, 2);
+  v_vault_total_mxn_coins_amount numeric(12, 2);
+  v_vault_total_usd_amount numeric(12, 2);
+  v_vault_total_usd_mxn_amount numeric(12, 2);
+  v_vault_total_amount numeric(12, 2);
 begin
   if cut is null or jsonb_typeof(cut) <> 'object' then
     raise exception 'cash_cut_required';
@@ -282,6 +339,7 @@ begin
   if adjustment_lines is null then
     adjustment_lines := '[]'::jsonb;
   end if;
+  v_vault_withdrawals := coalesce(cut->'vault_withdrawals', '[]'::jsonb);
 
   if jsonb_typeof(product_lines) <> 'array' then
     raise exception 'cash_cut_product_lines_invalid';
@@ -291,6 +349,9 @@ begin
   end if;
   if jsonb_typeof(adjustment_lines) <> 'array' then
     raise exception 'cash_cut_adjustments_invalid';
+  end if;
+  if jsonb_typeof(v_vault_withdrawals) <> 'array' then
+    raise exception 'cash_cut_vault_withdrawals_invalid';
   end if;
 
   v_actor_role := public.current_actor_role();
@@ -389,7 +450,10 @@ begin
     sales_usd_mxn_amount,
     iva_zero_amount,
     ticket_total_amount,
-    versatil_cash_count_amount
+    versatil_cash_count_amount,
+    vault_withdrawals,
+    vault_withdrawals_total_amount,
+    delivered_cash_amount
   ) values (
     v_cut_id,
     v_actor_workspace_id,
@@ -424,7 +488,10 @@ begin
     v_sales_usd_mxn_amount,
     v_iva_zero_amount,
     v_ticket_total_amount,
-    v_versatil_cash_count_amount
+    v_versatil_cash_count_amount,
+    '[]'::jsonb,
+    0,
+    0
   );
 
   v_sort_order := 0;
@@ -516,6 +583,79 @@ begin
   v_total_usd_mxn_amount := round(v_total_usd_amount * v_exchange_rate, 2);
   v_total_counted_cash_amount := round(v_total_mxn_bills_amount + v_total_mxn_coins_amount + v_total_usd_mxn_amount, 2);
 
+  for v_vault_entry in
+    select value from jsonb_array_elements(v_vault_withdrawals)
+  loop
+    v_vault_reference := nullif(btrim(v_vault_entry->>'reference_label'), '');
+    v_vault_note := nullif(btrim(v_vault_entry->>'note'), '');
+    v_vault_denomination_lines := coalesce(v_vault_entry->'denomination_lines', '[]'::jsonb);
+    v_vault_line_rows := '[]'::jsonb;
+    v_vault_total_mxn_bills_amount := 0;
+    v_vault_total_mxn_coins_amount := 0;
+    v_vault_total_usd_amount := 0;
+
+    if jsonb_typeof(v_vault_denomination_lines) <> 'array' then
+      raise exception 'cash_cut_vault_withdrawals_invalid';
+    end if;
+
+    for v_entry in
+      select value from jsonb_array_elements(v_vault_denomination_lines)
+    loop
+      v_currency := upper(coalesce(nullif(btrim(v_entry->>'currency'), ''), ''));
+      v_kind := lower(coalesce(nullif(btrim(v_entry->>'kind'), ''), ''));
+      v_denomination := coalesce(nullif(v_entry->>'denomination', '')::numeric, 0);
+      v_quantity := coalesce(nullif(v_entry->>'quantity', '')::integer, 0);
+
+      if v_currency not in ('MXN', 'USD') or v_kind not in ('bill', 'coin') or v_denomination <= 0 or v_quantity < 0 then
+        raise exception 'cash_cut_vault_withdrawal_denom_invalid';
+      end if;
+
+      v_line_total := round(v_denomination * v_quantity, 2);
+      v_vault_line_rows := v_vault_line_rows || jsonb_build_array(
+        jsonb_build_object(
+          'currency', v_currency,
+          'kind', v_kind,
+          'denomination', v_denomination,
+          'quantity', v_quantity,
+          'line_total', v_line_total
+        )
+      );
+
+      if v_currency = 'MXN' and v_kind = 'bill' then
+        v_vault_total_mxn_bills_amount := v_vault_total_mxn_bills_amount + v_line_total;
+      elsif v_currency = 'MXN' and v_kind = 'coin' then
+        v_vault_total_mxn_coins_amount := v_vault_total_mxn_coins_amount + v_line_total;
+      else
+        v_vault_total_usd_amount := v_vault_total_usd_amount + v_line_total;
+      end if;
+    end loop;
+
+    v_vault_total_usd_mxn_amount := round(v_vault_total_usd_amount * v_exchange_rate, 2);
+    v_vault_total_amount := round(v_vault_total_mxn_bills_amount + v_vault_total_mxn_coins_amount + v_vault_total_usd_mxn_amount, 2);
+
+    if v_vault_reference is null and v_vault_note is null and v_vault_total_amount = 0 then
+      continue;
+    end if;
+
+    v_vault_item_rows := v_vault_item_rows || jsonb_build_array(
+      jsonb_build_object(
+        'reference_label', v_vault_reference,
+        'note', v_vault_note,
+        'total_mxn_bills_amount', round(v_vault_total_mxn_bills_amount, 2),
+        'total_mxn_coins_amount', round(v_vault_total_mxn_coins_amount, 2),
+        'total_mxn_amount', round(v_vault_total_mxn_bills_amount + v_vault_total_mxn_coins_amount, 2),
+        'total_usd_amount', round(v_vault_total_usd_amount, 2),
+        'total_usd_mxn_amount', v_vault_total_usd_mxn_amount,
+        'total_comparable_amount', v_vault_total_amount,
+        'denomination_lines', v_vault_line_rows
+      )
+    );
+    v_vault_withdrawals_total_amount := v_vault_withdrawals_total_amount + v_vault_total_amount;
+  end loop;
+
+  v_vault_withdrawals_total_amount := round(v_vault_withdrawals_total_amount, 2);
+  v_delivered_cash_amount := round(v_total_counted_cash_amount + v_vault_withdrawals_total_amount, 2);
+
   v_sort_order := 0;
   for v_entry in
     select value from jsonb_array_elements(adjustment_lines)
@@ -547,8 +687,9 @@ begin
         v_affects_cash := true;
         v_signed_amount := -v_amount;
       when 'retiro_boveda' then
-        v_affects_cash := true;
-        v_signed_amount := -v_amount;
+        v_amount := v_vault_withdrawals_total_amount;
+        v_affects_cash := false;
+        v_signed_amount := v_amount;
       when 'deposito_retiro_parcial' then
         v_affects_cash := true;
         v_signed_amount := case when coalesce(v_direction, 'entrada') = 'salida' then -v_amount else v_amount end;
@@ -594,6 +735,8 @@ begin
 
     if v_adjustment_type = 'fondo_inicial' then
       null;
+    elsif v_adjustment_type = 'retiro_boveda' then
+      null;
     elsif v_affects_cash then
       v_total_cash_adjustments_amount := v_total_cash_adjustments_amount + v_signed_amount;
     else
@@ -602,7 +745,7 @@ begin
   end loop;
 
   v_expected_cash_amount := round(v_net_cash_sales_amount + v_total_cash_adjustments_amount, 2);
-  v_difference_amount := round(v_total_counted_cash_amount - v_versatil_cash_count_amount, 2);
+  v_difference_amount := round(v_delivered_cash_amount - v_versatil_cash_count_amount, 2);
 
   update public.cash_cuts
   set
@@ -611,6 +754,9 @@ begin
     total_usd_amount = round(v_total_usd_amount, 2),
     total_usd_mxn_amount = v_total_usd_mxn_amount,
     total_counted_cash_amount = v_total_counted_cash_amount,
+    vault_withdrawals = v_vault_item_rows,
+    vault_withdrawals_total_amount = v_vault_withdrawals_total_amount,
+    delivered_cash_amount = v_delivered_cash_amount,
     total_cash_adjustments_amount = round(v_total_cash_adjustments_amount, 2),
     identified_transfers_amount = round(v_identified_transfers_amount, 2),
     initial_fund_amount = round(v_initial_fund_amount, 2),
@@ -622,7 +768,9 @@ begin
   return jsonb_build_object(
     'id', v_cut_id,
     'business_date', v_business_date,
-    'daily_sequence', v_daily_sequence
+    'daily_sequence', v_daily_sequence,
+    'vault_withdrawals_total_amount', v_vault_withdrawals_total_amount,
+    'delivered_cash_amount', v_delivered_cash_amount
   );
 end;
 $$;
@@ -633,8 +781,11 @@ alter table public.cash_cut_denominations enable row level security;
 update public.cash_cuts
 set
   initial_fund_amount = coalesce(initial_fund_amount, 0),
+  vault_withdrawals = coalesce(vault_withdrawals, '[]'::jsonb),
+  vault_withdrawals_total_amount = coalesce(vault_withdrawals_total_amount, 0),
+  delivered_cash_amount = round(coalesce(total_counted_cash_amount, 0) + coalesce(vault_withdrawals_total_amount, 0), 2),
   versatil_cash_count_amount = coalesce(versatil_cash_count_amount, 0),
-  difference_amount = round(total_counted_cash_amount - coalesce(versatil_cash_count_amount, 0), 2);
+  difference_amount = round((coalesce(total_counted_cash_amount, 0) + coalesce(vault_withdrawals_total_amount, 0)) - coalesce(versatil_cash_count_amount, 0), 2);
 
 alter table public.cash_cut_adjustments enable row level security;
 
