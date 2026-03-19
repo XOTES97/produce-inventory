@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.01";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.01";
+import * as cfg from "./config.js?v=2026.03.19.02";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.02";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.17.01";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.02";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -39,6 +39,9 @@ const MASTER_DATA_TTL_MS = 1000 * 60 * 5;
 const MAX_PROOF_DIMENSION = 1280;
 const PROOF_COMPRESS_QUALITY = 0.82;
 const PROOF_COMPRESS_BYTES_THRESHOLD = 1_200_000;
+const EMPLOYEE_PROOF_MAX_DIMENSION = 960;
+const EMPLOYEE_PROOF_JPEG_QUALITY = 0.74;
+const EMPLOYEE_CAMERA_REQUEST_DIMENSION = 1280;
 const PROOF_PICKER_RESET_MS = 45_000;
 const MOVEMENT_LINES_PREVIEW_LIMIT = 12;
 const DEFAULT_PROOF_STAMP_ROWS = 2;
@@ -537,7 +540,8 @@ async function buildEmployeeCameraFile(videoEl, employeeName) {
   }
 
   const capturedAt = new Date();
-  const target = fitMediaWithin(sourceWidth, sourceHeight, MAX_PROOF_DIMENSION);
+  // Employee proofs should upload fast on mobile, so keep them smaller than manager uploads.
+  const target = fitMediaWithin(sourceWidth, sourceHeight, EMPLOYEE_PROOF_MAX_DIMENSION);
   const canvas = document.createElement("canvas");
   canvas.width = target.width;
   canvas.height = target.height;
@@ -547,7 +551,7 @@ async function buildEmployeeCameraFile(videoEl, employeeName) {
   ctx.drawImage(videoEl, 0, 0, target.width, target.height);
   drawEmployeeProofStamp(ctx, canvas, employeeCaptureStampLines(employeeName, capturedAt));
 
-  const blob = await canvasToBlob(canvas, { type: "image/jpeg", quality: 0.88 });
+  const blob = await canvasToBlob(canvas, { type: "image/jpeg", quality: EMPLOYEE_PROOF_JPEG_QUALITY });
   if (!blob) throw new Error("No se pudo capturar la foto.");
 
   const safeStamp = capturedAt.toISOString().replace(/[:.]/g, "-");
@@ -671,8 +675,8 @@ async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evi
           audio: false,
           video: {
             facingMode: { ideal: "environment" },
-            width: { ideal: 1600 },
-            height: { ideal: 1600 },
+            width: { ideal: EMPLOYEE_CAMERA_REQUEST_DIMENSION },
+            height: { ideal: EMPLOYEE_CAMERA_REQUEST_DIMENSION },
           },
         });
         video.srcObject = stream;
