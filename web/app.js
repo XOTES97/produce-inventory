@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.10";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.10";
+import * as cfg from "./config.js?v=2026.03.19.11";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.11";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.10";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.11";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -49,6 +49,9 @@ const DEFAULT_PROOF_STAMP_ROWS = 2;
 const CAPTURE_DRAFT_AUTOSAVE_MS = 450;
 const CAPTURE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const CAPTURE_DRAFT_SCHEMA_VERSION = 1;
+const CASH_DRAFT_AUTOSAVE_MS = 450;
+const CASH_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const CASH_DRAFT_SCHEMA_VERSION = 1;
 const CASH_DEFAULT_EXCHANGE_RATE = 17.5;
 const CASH_DEFAULT_INITIAL_FUND = 1000;
 const CASH_DEFAULT_CUT_TYPE = "Corte Z";
@@ -212,6 +215,7 @@ const STORAGE_KEYS = {
   cutoffReportApplyDiscrepancy: "produce_inventory.cutoff_report.apply_discrepancy",
   hypotheticalAdjustments: "produce_inventory.hypothetical.adjustments",
   captureDraft: "produce_inventory.capture.draft.v1",
+  cashDraft: "produce_inventory.cash.draft.v1",
 };
 const NETWORK_TIMEOUT_MS = 45000;
 
@@ -259,6 +263,21 @@ function reconcileProofPickerState() {
 let pageContextCounter = 0;
 let lastLaidOutRoute = "";
 let routeScrollResetPending = true;
+let captureDraftFlushFn = null;
+let cashDraftFlushFn = null;
+
+function flushPendingDraftSaves() {
+  try {
+    captureDraftFlushFn?.();
+  } catch {
+    // ignore
+  }
+  try {
+    cashDraftFlushFn?.();
+  } catch {
+    // ignore
+  }
+}
 
 function isPageContextActive(pageCtx) {
   if (!pageCtx || typeof pageCtx.isActive !== "function") return true;
@@ -788,6 +807,7 @@ async function prepareProofFiles(rawFiles, { label = "evidencia", onProgress } =
 function navTo(r) {
   if (route() === String(r || "")) return;
   clearProofPickerOpen();
+  flushPendingDraftSaves();
   routeScrollResetPending = true;
   location.hash = `#/${r}`;
 }
@@ -848,6 +868,25 @@ function loadCaptureDraft() {
 function buildCaptureDraft(payload) {
   return {
     version: CAPTURE_DRAFT_SCHEMA_VERSION,
+    timestamp: Date.now(),
+    payload,
+  };
+}
+
+function loadCashDraft() {
+  const data = storageGetJson(STORAGE_KEYS.cashDraft, null);
+  if (!data || typeof data !== "object") return null;
+  if (data.version !== CASH_DRAFT_SCHEMA_VERSION) return null;
+  if (!data.timestamp || Date.now() - Number(data.timestamp) > CASH_DRAFT_TTL_MS) {
+    storageRemove(STORAGE_KEYS.cashDraft);
+    return null;
+  }
+  return data;
+}
+
+function buildCashDraft(payload) {
+  return {
+    version: CASH_DRAFT_SCHEMA_VERSION,
     timestamp: Date.now(),
     payload,
   };
@@ -2761,42 +2800,56 @@ function setBatchClosePresetState(value) {
     return availableMovementTypes[0] || "venta";
   }
 
+  function saveCaptureDraftNow() {
+    if (state.captureSubmitting || isProofPickerOpen) return;
+    if (draftRestoreInProgress) return;
+    if (draftSaveTimer) {
+      window.clearTimeout(draftSaveTimer);
+      draftSaveTimer = null;
+    }
+    currentMode = getSelectedCaptureMode();
+    const draftLines = lineRows.length > MAX_DRAFT_LINES ? lineRows.slice(0, MAX_DRAFT_LINES) : lineRows;
+    const payload = {
+      movementType: currentMode,
+      occurredAt:
+        isActorManager && !!lockOccurredAt.checked
+          ? normalizeDraftValue(occurredAt.value, localNowInputValue())
+          : null,
+      lockOccurredAt: !!lockOccurredAt.checked,
+      aggregateMode: !!aggregateMode.checked,
+      aggregateCloseTime: normalizeDraftValue(aggregateCloseTime.value),
+      notes: normalizeDraftValue(notes.value),
+      mermaExhibition: !!mermaExhibition.checked,
+      mermaDegustation: !!mermaDegustation.checked,
+      currency: normalizeDraftValue(currency.value, DEFAULT_CURRENCY) || DEFAULT_CURRENCY,
+      fromQuality: normalizeDraftValue(fromQuality.value),
+      toQuality: normalizeDraftValue(toQuality.value),
+      fromSku: normalizeDraftValue(fromSku.value),
+      toSku: normalizeDraftValue(toSku.value),
+      adjustDir: normalizeDraftValue(adjustDir.value, "decrease"),
+      aggregateNoCutoff: !!aggregateNoCutoff.checked,
+      lines: draftLines.map((r) => r.get()),
+    };
+    storageSet(STORAGE_KEYS.captureDraft, JSON.stringify(buildCaptureDraft(payload)));
+  }
+
   function queueDraftSave() {
     if (state.captureSubmitting || isProofPickerOpen) return;
     if (draftRestoreInProgress) return;
     if (draftSaveTimer) window.clearTimeout(draftSaveTimer);
     draftSaveTimer = window.setTimeout(() => {
-      draftSaveTimer = null;
-      currentMode = getSelectedCaptureMode();
-      const draftLines = lineRows.length > MAX_DRAFT_LINES ? lineRows.slice(0, MAX_DRAFT_LINES) : lineRows;
-      const payload = {
-        movementType: currentMode,
-        occurredAt:
-          isActorManager && !!lockOccurredAt.checked
-            ? normalizeDraftValue(occurredAt.value, localNowInputValue())
-            : null,
-        lockOccurredAt: !!lockOccurredAt.checked,
-        aggregateMode: !!aggregateMode.checked,
-        aggregateCloseTime: normalizeDraftValue(aggregateCloseTime.value),
-        notes: normalizeDraftValue(notes.value),
-        mermaExhibition: !!mermaExhibition.checked,
-        mermaDegustation: !!mermaDegustation.checked,
-        currency: normalizeDraftValue(currency.value, DEFAULT_CURRENCY) || DEFAULT_CURRENCY,
-        fromQuality: normalizeDraftValue(fromQuality.value),
-        toQuality: normalizeDraftValue(toQuality.value),
-        fromSku: normalizeDraftValue(fromSku.value),
-        toSku: normalizeDraftValue(toSku.value),
-        adjustDir: normalizeDraftValue(adjustDir.value, "decrease"),
-        aggregateNoCutoff: !!aggregateNoCutoff.checked,
-        lines: draftLines.map((r) => r.get()),
-      };
-      storageSet(STORAGE_KEYS.captureDraft, JSON.stringify(buildCaptureDraft(payload)));
+      saveCaptureDraftNow();
     }, CAPTURE_DRAFT_AUTOSAVE_MS);
   }
 
   function clearCaptureDraft() {
     storageRemove(STORAGE_KEYS.captureDraft);
   }
+
+  captureDraftFlushFn = () => {
+    if (route() !== "capture") return;
+    saveCaptureDraftNow();
+  };
 
   function applyCaptureDraft() {
     const wrapped = loadCaptureDraft();
@@ -5795,6 +5848,12 @@ async function pageCash(pageCtx) {
   const isActive = () => isPageContextActive(pageCtx);
   const managerMode = isManager();
   const employeeMode = actorRole() === "employee";
+  if (!state.cashDraft) {
+    const wrapped = loadCashDraft();
+    if (wrapped?.payload && typeof wrapped.payload === "object") {
+      state.cashDraft = wrapped.payload;
+    }
+  }
   const draft = ensureCashDraft();
   const activeEmployees = [...state.employees]
     .filter((employee) => employee.is_active)
@@ -5820,6 +5879,8 @@ async function pageCash(pageCtx) {
   let loadingList = false;
   let loadingDetail = false;
   let listRows = [];
+  let cashDraftRestoreInProgress = false;
+  let cashDraftSaveTimer = null;
 
   const productParticipationEls = [];
   const productAmountEls = [];
@@ -5921,6 +5982,33 @@ async function pageCash(pageCtx) {
     if (!state.cashFlashNotice) return;
     formMsg.appendChild(notice(state.cashFlashNotice.kind || "ok", state.cashFlashNotice.text || ""));
   }
+
+  function saveCashDraftNow() {
+    if (state.cashSubmitting || cashDraftRestoreInProgress) return;
+    if (!state.cashDraft || typeof state.cashDraft !== "object") return;
+    if (cashDraftSaveTimer) {
+      window.clearTimeout(cashDraftSaveTimer);
+      cashDraftSaveTimer = null;
+    }
+    storageSet(STORAGE_KEYS.cashDraft, JSON.stringify(buildCashDraft(state.cashDraft)));
+  }
+
+  function queueCashDraftSave() {
+    if (state.cashSubmitting || cashDraftRestoreInProgress) return;
+    if (cashDraftSaveTimer) window.clearTimeout(cashDraftSaveTimer);
+    cashDraftSaveTimer = window.setTimeout(() => {
+      saveCashDraftNow();
+    }, CASH_DRAFT_AUTOSAVE_MS);
+  }
+
+  function clearCashDraftStorage() {
+    storageRemove(STORAGE_KEYS.cashDraft);
+  }
+
+  cashDraftFlushFn = () => {
+    if (route() !== "cash") return;
+    saveCashDraftNow();
+  };
 
   function setTextSummary(key, label, value, extraClass = "") {
     const card = summaryRefs[key];
@@ -6062,15 +6150,18 @@ async function pageCash(pageCtx) {
       productLabelInput.addEventListener("input", () => {
         clearCashFlash();
         row.product_label = productLabelInput.value;
+        queueCashDraftSave();
       });
       amountInput.addEventListener("input", () => {
         clearCashFlash();
         row.amount = amountInput.value;
         refreshComputed();
+        queueCashDraftSave();
       });
       noteInput.addEventListener("input", () => {
         clearCashFlash();
         row.note = noteInput.value;
+        queueCashDraftSave();
       });
 
       productParticipationEls[index] = participationValue;
@@ -6093,6 +6184,7 @@ async function pageCash(pageCtx) {
         onclick: () => {
           draft.product_lines.push(defaultCashProductLine());
           scheduleSafeRender();
+          queueCashDraftSave();
         },
       },
       ["Agregar producto"]
@@ -6122,6 +6214,7 @@ async function pageCash(pageCtx) {
             clearCashFlash();
             draft.denomination_lines[globalIndex].quantity = quantityInput.value;
             refreshComputed();
+            queueCashDraftSave();
           });
           denominationTotalEls[globalIndex] = totalValue;
           return h("tr", {}, [
@@ -6166,6 +6259,7 @@ async function pageCash(pageCtx) {
             row.quantity = quantityInput.value;
             totalValue.textContent = fmtMoney(roundMoneyValue(Number(row.denomination || 0) * Math.max(0, integerFromInput(row.quantity, 0))), currency);
             refreshComputed();
+            queueCashDraftSave();
           });
           totalValue.textContent = fmtMoney(roundMoneyValue(Number(row.denomination || 0) * Math.max(0, integerFromInput(row.quantity, 0))), currency);
           return h("tr", {}, [
@@ -6198,6 +6292,7 @@ async function pageCash(pageCtx) {
             if (draft.vault_withdrawals.length === 0) draft.vault_withdrawals.push(defaultCashVaultWithdrawal());
             renderVaultWithdrawals();
             refreshComputed();
+            queueCashDraftSave();
           },
         },
         ["Quitar retiro"]
@@ -6207,10 +6302,12 @@ async function pageCash(pageCtx) {
       referenceInput.addEventListener("input", () => {
         clearCashFlash();
         withdrawal.reference_label = referenceInput.value;
+        queueCashDraftSave();
       });
       noteInput.addEventListener("input", () => {
         clearCashFlash();
         withdrawal.note = noteInput.value;
+        queueCashDraftSave();
       });
 
       vaultWithdrawalTotalEls[index] = subtotalValue;
@@ -6243,6 +6340,7 @@ async function pageCash(pageCtx) {
           draft.vault_withdrawals.push(defaultCashVaultWithdrawal());
           renderVaultWithdrawals();
           refreshComputed();
+          queueCashDraftSave();
         },
       },
       ["Agregar retiro a bóveda adicional"]
@@ -6310,6 +6408,7 @@ async function pageCash(pageCtx) {
           clearCashFlash();
           row.amount = amountInput.value;
           refreshComputed();
+          queueCashDraftSave();
         });
       }
       if (fixedSign === "direction") {
@@ -6317,15 +6416,18 @@ async function pageCash(pageCtx) {
           clearCashFlash();
           row.direction = directionInput.value;
           refreshComputed();
+          queueCashDraftSave();
         });
       }
       supportInput.addEventListener("input", () => {
         clearCashFlash();
         row.support_reference = supportInput.value;
+        queueCashDraftSave();
       });
       noteInput.addEventListener("input", () => {
         clearCashFlash();
         row.note = noteInput.value;
+        queueCashDraftSave();
       });
 
       adjustmentAmountEls[index] = amountInput;
@@ -6801,6 +6903,7 @@ async function pageCash(pageCtx) {
         kind: "ok",
         text: `Guardado: ${cutRef} | ${cashDifferenceText(computed.differenceAmount)}`,
       };
+      clearCashDraftStorage();
       resetCashDraft();
       if (managerMode && created.id) {
         state.cashSelectedId = created.id;
@@ -6818,6 +6921,7 @@ async function pageCash(pageCtx) {
       clearCashFlash();
       draft[key] = input.value;
       if (refresh) refreshComputed();
+      queueCashDraftSave();
     });
   }
 
@@ -6836,69 +6940,83 @@ async function pageCash(pageCtx) {
   observationsInput.addEventListener("input", () => {
     clearCashFlash();
     draft.observations = observationsInput.value;
+    queueCashDraftSave();
   });
 
   invoiceSaleInput.addEventListener("input", () => {
     clearCashFlash();
     draft.invoice_sale_amount = invoiceSaleInput.value;
+    queueCashDraftSave();
   });
   cashReceiptsInput.addEventListener("input", () => {
     clearCashFlash();
     draft.cash_receipts_amount = cashReceiptsInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   refundReceiptsInput.addEventListener("input", () => {
     clearCashFlash();
     draft.refund_receipts_amount = refundReceiptsInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   creditInvoicedSalesInput.addEventListener("input", () => {
     clearCashFlash();
     draft.credit_invoiced_sales_amount = creditInvoicedSalesInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   cashInvoicedSalesInput.addEventListener("input", () => {
     clearCashFlash();
     draft.cash_invoiced_sales_amount = cashInvoicedSalesInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   totalInvoicedSalesInput.addEventListener("input", () => {
     clearCashFlash();
     draft.total_invoiced_sales_amount = totalInvoicedSalesInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   salesMxnInput.addEventListener("input", () => {
     clearCashFlash();
     draft.sales_mxn_amount = salesMxnInput.value;
+    queueCashDraftSave();
   });
   salesUsdInput.addEventListener("input", () => {
     clearCashFlash();
     draft.sales_usd_amount = salesUsdInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   exchangeRateInput.addEventListener("input", () => {
     clearCashFlash();
     draft.exchange_rate = exchangeRateInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   ivaZeroInput.addEventListener("input", () => {
     clearCashFlash();
     draft.iva_zero_amount = ivaZeroInput.value;
+    queueCashDraftSave();
   });
   ticketTotalInput.addEventListener("input", () => {
     clearCashFlash();
     draft.ticket_total_amount = ticketTotalInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   versatilCashCountInput.addEventListener("input", () => {
     clearCashFlash();
     draft.versatil_cash_count_amount = versatilCashCountInput.value;
     refreshComputed();
+    queueCashDraftSave();
   });
   if (!employeeMode && cashierInput instanceof HTMLSelectElement) {
     cashierInput.addEventListener("change", () => {
       clearCashFlash();
       draft.cashier_employee_id = cashierInput.value;
+      queueCashDraftSave();
     });
   }
 
@@ -6927,6 +7045,7 @@ async function pageCash(pageCtx) {
       class: "btn btn-ghost",
       type: "button",
       onclick: () => {
+        clearCashDraftStorage();
         resetCashDraft();
         state.cashFlashNotice = null;
         scheduleSafeRender();
@@ -8535,11 +8654,13 @@ async function boot() {
     scheduleSafeRender();
   });
   window.addEventListener("blur", () => {
+    flushPendingDraftSaves();
     clearProofPickerOpen();
     clearRenderTimer();
   });
   window.addEventListener("pagehide", () => {
     isAppHidden = true;
+    flushPendingDraftSaves();
     clearProofPickerOpen();
     clearRenderTimer();
   });
@@ -8554,6 +8675,7 @@ async function boot() {
     const hidden = !isAppInForeground();
     isAppHidden = hidden;
     if (hidden) {
+      flushPendingDraftSaves();
       clearProofPickerOpen();
       clearRenderTimer();
       return;
