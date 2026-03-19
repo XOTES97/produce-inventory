@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.08";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.08";
+import * as cfg from "./config.js?v=2026.03.19.09";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.09";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.08";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.09";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1787,6 +1787,80 @@ function appendLabelContent(labelEl, labelContent) {
 
 function optionalLabel(baseText) {
   return [document.createTextNode(`${baseText} `), h("span", { class: "optional-mark", text: "(Opcional)" })];
+}
+
+function openCashGuideModal() {
+  const backdrop = h("div", { class: "modal-backdrop" });
+  const modal = h("div", { class: "modal col" });
+  backdrop.appendChild(modal);
+
+  function close() {
+    backdrop.remove();
+  }
+
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop) close();
+  });
+
+  const sectionList = h("div", { class: "col", style: "gap: 8px" }, [
+    h("div", { class: "notice" }, [
+      h("div", { style: "font-weight: 780", text: "Orden recomendado" }),
+      h("ol", { class: "cash-guide-list" }, [
+        h("li", { text: "Captura primero Total del ticket y Arqueo de efectivo en comprobante Versatil." }),
+        h("li", { text: "Llena Datos generales del corte." }),
+        h("li", { text: "Llena Datos del ticket POS." }),
+        h("li", { text: "Cuenta el efectivo en Arqueo fisico." }),
+        h("li", { text: "Si hubo retiros a bóveda, captúralos en su sección." }),
+        h("li", { text: "Llena solo los movimientos que sí existieron en Controles adicionales del cajero." }),
+        h("li", { text: "Revisa la Conciliacion automatica y luego guarda." }),
+      ]),
+    ]),
+    h("div", { class: "notice" }, [
+      h("div", { style: "font-weight: 780", text: "Secciones obligatorias" }),
+      h("ul", { class: "cash-guide-list" }, [
+        h("li", { text: "Datos clave" }),
+        h("li", { text: "Datos generales del corte" }),
+        h("li", { text: "Datos del ticket POS" }),
+        h("li", { text: "Arqueo fisico" }),
+        h("li", { text: "Conciliacion automatica" }),
+      ]),
+    ]),
+    h("div", { class: "notice" }, [
+      h("div", { style: "font-weight: 780", text: "Secciones opcionales o segun el caso" }),
+      h("ul", { class: "cash-guide-list" }, [
+        h("li", { text: "Desglose de venta por producto (Opcional)." }),
+        h("li", { text: "Retiros a bóveda: solo si realmente hubo retiros." }),
+        h("li", { text: "Controles adicionales del cajero: llena solo los conceptos que sí ocurrieron." }),
+      ]),
+    ]),
+    h("div", { class: "notice" }, [
+      h("div", { style: "font-weight: 780", text: "Reglas clave" }),
+      h("ul", { class: "cash-guide-list" }, [
+        h("li", { text: "Fondo de caja inicial es informativo. No genera faltante por sí solo." }),
+        h("li", { text: "Transferencias identificadas se registran, pero no cuentan como efectivo." }),
+        h("li", { text: "Retiros a bóveda sí forman parte del efectivo entregado." }),
+        h("li", { text: "Si crédito + efectivo facturado no coincide con total facturado, la app mostrará una advertencia." }),
+      ]),
+    ]),
+  ]);
+
+  modal.append(
+    h("div", { class: "row-wrap modal-header" }, [
+      h("div", { class: "col", style: "gap: 4px" }, [
+        h("div", { style: "font-weight: 820; font-size: 16px", text: "Guía rápida Corte Z" }),
+        h("div", { class: "muted", text: "Resumen corto para empleados dentro de la app." }),
+      ]),
+      h("div", { class: "spacer" }),
+      h("button", { class: "btn btn-ghost", type: "button", onclick: close }, ["Cerrar"]),
+    ]),
+    sectionList,
+    h("div", { class: "row-wrap" }, [
+      h("div", { class: "spacer" }),
+      h("button", { class: "btn", type: "button", onclick: close }, ["Entendido"]),
+    ])
+  );
+
+  document.body.appendChild(backdrop);
 }
 
 function field(labelText, inputEl) {
@@ -6853,7 +6927,19 @@ async function pageCash(pageCtx) {
   );
 
   const formCard = h("div", { class: "card col no-print cash-form-card" }, [
-    h("div", { class: "h1", text: "Corte Z" }),
+    h("div", { class: "row-wrap" }, [
+      h("div", { class: "h1", text: "Corte Z" }),
+      h("div", { class: "spacer" }),
+      h(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          onclick: () => openCashGuideModal(),
+        },
+        ["Guía rápida"]
+      ),
+    ]),
     h("div", { class: "muted cash-form-intro", text: employeeMode ? "Captura el cierre del día y envíalo una sola vez." : "Puedes capturar, revisar e imprimir cierres de caja desde aquí." }),
     formMsg,
     h("div", { class: "cash-priority-block" }, [

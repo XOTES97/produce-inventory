@@ -577,6 +577,15 @@ textarea { min-height: 84px; resize: vertical; }
   line-height: 1.5;
 }
 
+.cash-guide-list {
+  margin: 8px 0 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.5;
+}
+
 .cash-pos-warning-wrap {
   margin: 6px 0 4px;
 }
