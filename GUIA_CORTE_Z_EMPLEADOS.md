@@ -1,11 +1,12 @@
-# Guia para Empleados: Como llenar el Corte Z en FST Mercado
+# Guía para empleados: cómo llenar el Corte Z en FST Mercado
 
-Esta guia explica, en palabras simples, como capturar el `Corte Z` en la app y que informacion va en cada seccion.
+Esta guía explica, en español simple, cómo capturar el `Corte Z` en la app y qué información va en cada sección.
 
-Objetivo del Corte Z:
-- reportar el efectivo contado del dia
+## Objetivo del Corte Z
+El Corte Z sirve para:
+- reportar el efectivo contado del día
 - registrar retiros a bóveda y otros movimientos de caja
-- comparar el total entregado contra el `Arqueo de efectivo en comprobante Versatil`
+- comparar el efectivo entregado contra el `Arqueo de efectivo en comprobante Versatil`
 - detectar `sobrante` o `faltante`
 
 ## Secciones obligatorias y opcionales
@@ -14,84 +15,82 @@ Objetivo del Corte Z:
 - `Datos clave`
 - `Datos generales del corte`
 - `Datos del ticket POS`
-- `Arqueo fisico`
-- `Conciliacion automatica`
+- `Arqueo físico`
+- `Conciliación automática`
 
-### Secciones opcionales o segun el caso
+### Secciones opcionales o según el caso
 - `Desglose de venta por producto (Opcional)`
 - `Retiros a bóveda (solo si hubo retiros)`
-- `Controles adicionales del cajero (solo llena lo que si haya ocurrido)`
+- `Controles adicionales del cajero (solo llena lo que sí haya ocurrido)`
 
 ## Regla principal
 El Corte Z compara:
-
 - `Efectivo contado en caja`
-- mas `Retiros a bóveda`
+- más `Retiros a bóveda`
 - contra `Arqueo de efectivo en comprobante Versatil`
 
 Importante:
-- `Fondo de caja inicial` no genera faltante ni sobrante por si solo
-- `Transferencias identificadas` no cuentan como efectivo
-- `Ventas facturadas` se registran para control, pero no cambian automaticamente la diferencia
+- `Fondo de caja inicial` es informativo y no genera faltante ni sobrante por sí solo.
+- `Transferencias identificadas` no cuentan como efectivo.
+- `Ventas facturadas` se registran para control, pero no cambian automáticamente la diferencia.
 
 ## Orden recomendado para llenarlo
 Llena el Corte Z en este orden:
-
 1. `Total del ticket`
 2. `Arqueo de efectivo en comprobante Versatil`
 3. `Datos generales del corte`
 4. `Datos del ticket POS`
-5. `Arqueo fisico`
+5. `Arqueo físico`
 6. `Retiros a bóveda`
 7. `Controles adicionales del cajero`
-8. Revisa `Conciliacion automatica`
+8. Revisa `Conciliación automática`
 9. Guarda el Corte Z
 
 ## 1. Datos clave (Obligatorio)
-En la parte superior veras dos campos grandes.
+En la parte superior verás dos campos grandes.
 
 ### Total del ticket (Obligatorio)
-Aqui va el total general del ticket POS del dia.
+Aquí va el total general del ticket POS del día.
 
 ### Arqueo de efectivo en comprobante Versatil (Obligatorio)
-Aqui va el monto de efectivo que aparece en el comprobante de Versatil.
+Aquí va el monto de efectivo que aparece en el comprobante de Versatil.
 
 Este campo es muy importante porque contra este valor se compara el efectivo entregado.
 
 ## 2. Datos generales del corte (Obligatorio)
 
 ### Fecha del negocio (Obligatorio)
-Pon la fecha del dia que se esta cerrando.
+Pon la fecha del día que se está cerrando.
 
 ### Sucursal (Obligatorio)
-Normalmente ya aparecera la sucursal principal.
+Normalmente ya aparecerá la sucursal principal.
 
 ### Tipo de corte (Obligatorio)
-Normalmente sera `Corte Z`.
+Normalmente será `Corte Z`.
 
 ### Folio corte (Opcional)
-Si se usa un folio interno, capturalo aqui.
+Si se usa un folio interno, captúralo aquí.
 
 ### Inicio corte (Obligatorio)
-Hora o fecha-hora en que inicio la operacion del corte.
+Hora o fecha-hora en que inició la operación del corte.
 
 ### Fin corte (Obligatorio)
-Hora o fecha-hora en que termino la operacion del corte.
+Hora o fecha-hora en que terminó la operación del corte.
 
 ### Empleado / Cajero (Obligatorio)
 Selecciona al empleado correcto.
 
 ### Cajero sistema (Obligatorio)
-Nombre que aparece en sistema o la persona que opero caja.
+Nombre que aparece en sistema o la persona que operó caja.
 
 ### Clientes atendidos (Opcional)
-Numero de clientes atendidos ese dia, si se tiene ese dato.
+Número de clientes atendidos ese día, si se tiene ese dato.
 
-### Folio inicio tickets (Opcional)
-Primer folio del periodo.
+### Folio inicio tickets (Obligatorio)
+Primer folio del período.
 
-### Folio fin tickets (Opcional)
-Ultimo folio del periodo.
+### Folio fin tickets (Obligatorio)
+Último folio del período.
 
 ### Entregado por (Obligatorio)
 Persona que entrega el corte.
@@ -100,80 +99,86 @@ Persona que entrega el corte.
 Persona que recibe el corte.
 
 ### Observaciones (Opcional)
-Aqui puedes poner cualquier nota importante del dia.
+Aquí puedes poner cualquier nota importante del día.
 
 ## 3. Datos del ticket POS (Obligatorio)
 
-### Factura global / venta (Opcional)
-Monto de factura global o venta total segun el ticket POS.
+### Factura global / venta (Obligatorio)
+Monto de factura global o venta total según el ticket POS.
 
 ### Suma de recibos contado (Obligatorio)
 Total de ventas de contado.
 
 ### Reembolso recibos (Obligatorio si hubo reembolsos)
-Total de reembolsos o devoluciones del dia.
+Total de reembolsos o devoluciones del día.
 
 Nota:
-- este dato tambien alimenta automaticamente `Reembolsos del dia` en controles adicionales
+- este dato también alimenta automáticamente `Reembolsos del día` en controles adicionales
 
-### Ventas a credito facturadas (Opcional)
-Ventas facturadas a credito.
+### Ventas a crédito facturadas (Obligatorio)
+Captura el total facturado a crédito.
 
-### Ventas en efectivo facturadas (Opcional)
-Ventas facturadas pagadas en efectivo.
+Si no hubo, escribe `0`.
 
-### Total de ventas facturadas (Opcional)
-Total facturado general.
+### Ventas en efectivo facturadas (Obligatorio)
+Captura el total facturado pagado en efectivo.
 
-Control importante:
-- `Ventas a credito facturadas + Ventas en efectivo facturadas` debe ser igual a `Total de ventas facturadas`
-- si no coincide, la app mostrara una advertencia
+Si no hubo, escribe `0`.
 
-### Venta neta de contado (Automatico)
+### Total de ventas facturadas (Automático)
+La app lo calcula automáticamente sumando:
+- `Ventas a crédito facturadas`
+- `Ventas en efectivo facturadas`
+
+Importante:
+- este total ya no se captura manualmente
+- es informativo y no cambia la diferencia del corte
+
+### Venta neta de contado (Automático)
 La app lo calcula a partir de contado menos reembolsos.
 
 ### Ventas moneda nacional (Opcional)
 Ventas en MXN.
 
-### Ventas dolar (USD) (Opcional)
+### Ventas dólar (USD) (Opcional)
 Ventas cobradas en USD.
 
 ### Tipo de cambio (Obligatorio si hubo USD)
-Tipo de cambio del dia.
+Tipo de cambio del día.
 
-### Ventas dolar en MXN (Automatico)
-La app lo calcula automaticamente.
+### Ventas dólar en MXN (Automático)
+La app lo calcula automáticamente.
 
 ### IVA 0% (Opcional)
 Monto de IVA 0 si aplica.
 
 ## 4. Desglose de venta por producto (Opcional)
-Esta seccion es opcional.
+Esta sección es opcional.
 
-Se usa solo si quieren registrar como se repartio la venta entre productos.
+Se usa solo si quieren registrar cómo se repartió la venta entre productos.
 
 ### Producto
 Nombre del producto, por ejemplo:
-- Sandia
+- Sandía
 - Papaya
 - Piña
 
 ### Importe
 Monto vendido de ese producto.
 
-### Participacion
-La app lo calcula automaticamente con base en `Total del ticket`.
+### Participación
+La app lo calcula automáticamente con base en `Total del ticket`.
 
 ### Notas
-Observacion breve del producto, si hace falta.
+Observación breve del producto, si hace falta.
 
-Si no tienen esta informacion, pueden dejar esta seccion vacia.
+Si no tienen esta información, pueden dejar esta sección vacía.
 
-## 5. Arqueo fisico (Obligatorio)
-Aqui se captura el dinero fisico que realmente se conto.
+## 5. Arqueo físico (Obligatorio)
+Aquí se captura el dinero físico que realmente se contó.
 
 ### Arqueo MXN - Billetes (Obligatorio si hay billetes MXN)
-En `Cantidad` pon cuantas piezas hay de cada denominacion:
+En `Cantidad` pon cuántas piezas hay de cada denominación:
 - 1000
 - 500
 - 200
@@ -185,12 +190,12 @@ Ejemplo:
 - si hay 3 billetes de 500, en la fila de 500 se captura `3`
 
 ### Arqueo MXN - Monedas (Obligatorio si hay monedas MXN)
-En `Cantidad` pon cuantas monedas hay de cada denominacion.
+En `Cantidad` pon cuántas monedas hay de cada denominación.
 
 ### Arqueo USD (Obligatorio si hay efectivo en USD)
-En `Cantidad` pon cuantas piezas hay de cada denominacion en dolares.
+En `Cantidad` pon cuántas piezas hay de cada denominación en dólares.
 
-La app calcula automaticamente:
+La app calcula automáticamente:
 - total por fila
 - total MXN
 - total USD
@@ -198,24 +203,24 @@ La app calcula automaticamente:
 - efectivo contado en caja
 
 ## 6. Retiros a bóveda (Opcional, solo si hubo retiros)
-Esta seccion va inmediatamente despues del arqueo fisico.
+Esta sección va inmediatamente después del arqueo físico.
 
-Aqui se captura el dinero que fue retirado de la caja y guardado en bóveda o en sobre durante el dia.
+Aquí se captura el dinero que fue retirado de la caja y guardado en bóveda o en sobre durante el día.
 
 Importante:
-- si cuenta como parte del corte entregado
+- sí cuenta como parte del corte entregado
 - no se descuenta del corte
-- no genera faltante por si solo
+- no genera faltante por sí solo
 
-### Como llenar un retiro a bóveda
+### Cómo llenar un retiro a bóveda
 Cada retiro puede incluir:
 - `Referencia / sobre (Opcional)`
-- `Observacion (Opcional)`
-- desglose por denominacion
+- `Observación (Opcional)`
+- desglose por denominación
 
 Dentro de cada tabla:
-- en `Cantidad` pon cuantas piezas van en ese retiro
-- la app calcula el total automaticamente
+- en `Cantidad` pon cuántas piezas van en ese retiro
+- la app calcula el total automáticamente
 
 Se puede llenar:
 - `Bóveda MXN - Billetes`
@@ -223,35 +228,35 @@ Se puede llenar:
 - `Bóveda USD`
 
 ### Agregar retiro a bóveda adicional
-Si hubo mas de un retiro, usa:
+Si hubo más de un retiro, usa:
 - `Agregar retiro a bóveda adicional`
 
-La app mostrara:
+La app mostrará:
 - total por cada retiro
-- `Total retiros a bóveda` al final de la seccion
+- `Total retiros a bóveda` al final de la sección
 
 ## 7. Controles adicionales del cajero (Parcialmente opcional)
-Esta seccion registra movimientos de control.
+Esta sección registra movimientos de control.
 
 Importante:
-- no todos los campos aqui se llenan manualmente
+- no todos los campos aquí se llenan manualmente
 - algunos son informativos o se calculan solos
 
 ### Fondo de caja inicial (Informativo)
 Es informativo.
 
-Normalmente sera:
+Normalmente será:
 - `1000`
 
-No genera faltante ni sobrante por si solo.
+No genera faltante ni sobrante por sí solo.
 
-### Reembolsos del dia (Automatico)
-Se llena automaticamente desde `Reembolso recibos`.
+### Reembolsos del día (Automático)
+Se llena automáticamente desde `Reembolso recibos`.
 
-No se captura manualmente aqui.
+No se captura manualmente aquí.
 
 ### Gastos pagados con caja (Opcional, solo si hubo gasto)
-Captura aqui gastos pagados en efectivo desde la caja.
+Captura aquí gastos pagados en efectivo desde la caja.
 
 Ejemplos:
 - salarios
@@ -260,36 +265,36 @@ Ejemplos:
 - limpieza
 
 ### Retiros a bóveda (Informativo)
-Es informativo en esta seccion.
+Es informativo en esta sección.
 
-El monto viene automaticamente de la seccion `Retiros a bóveda`.
+El monto viene automáticamente de la sección `Retiros a bóveda`.
 
-No se captura manualmente aqui.
+No se captura manualmente aquí.
 
-### Depositos / retiros parciales (Opcional, solo si hubo movimiento)
-Captura movimientos como depositos de tarimas o bines, o salidas parciales si aplica.
+### Depósitos / retiros parciales (Opcional, solo si hubo movimiento)
+Captura movimientos como depósitos de tarimas o bines, o salidas parciales si aplica.
 
 ### Vales / comprobantes (Opcional)
-Capturalos solo si realmente se usaron.
+Captúralos solo si realmente se usaron.
 
 ### Cheques (Opcional)
-Capturalos solo si realmente se usaron.
+Captúralos solo si realmente se usaron.
 
 ### Transferencias identificadas (Opcional, solo si hubo transferencia)
-Aqui van transferencias bancarias verificadas del dia.
+Aquí van transferencias bancarias verificadas del día.
 
 Importante:
 - se registran para control
-- no cuentan como efectivo fisico
+- no cuentan como efectivo físico
 - no aumentan el efectivo entregado
 
 ### Otros ajustes (+/-) (Opcional)
-Aqui va cualquier ajuste adicional que no entre en los conceptos anteriores.
+Aquí va cualquier ajuste adicional que no entre en los conceptos anteriores.
 
-## 8. Conciliacion automatica (Automatico)
-Esta seccion se calcula sola.
+## 8. Conciliación automática (Automático)
+Esta sección se calcula sola.
 
-Aqui veras:
+Aquí verás:
 - efectivo contado MXN
 - USD contado
 - USD contado en MXN
@@ -303,26 +308,29 @@ Aqui veras:
 - transferencias identificadas
 - diferencia vs Versatil
 
-### Como interpretar la diferencia
+### Cómo interpretar la diferencia
 - `Sin diferencia`: todo cuadra
-- `Sobrante`: hay mas efectivo entregado que el reportado en Versatil
+- `Sobrante`: hay más efectivo entregado que el reportado en Versatil
 - `Faltante`: hay menos efectivo entregado que el reportado en Versatil
 
 ## 9. Antes de guardar
-Revisa esta lista rapida:
-
-- `Total del ticket` esta capturado
-- `Arqueo de efectivo en comprobante Versatil` esta capturado
-- el arqueo fisico tiene cantidades correctas
-- si hubo retiros a bóveda, estan capturados en su seccion
+Revisa esta lista rápida:
+- `Total del ticket` está capturado
+- `Arqueo de efectivo en comprobante Versatil` está capturado
+- `Factura global / venta` está capturada
+- `Ventas a crédito facturadas` está capturada, aunque sea `0`
+- `Ventas en efectivo facturadas` está capturada, aunque sea `0`
+- `Folio inicio tickets` está capturado
+- `Folio fin tickets` está capturado
+- `Entregado por` está capturado
+- el arqueo físico tiene cantidades correctas
+- si hubo retiros a bóveda, están capturados en su sección
 - si hubo reembolsos, el monto coincide con el POS
-- si hubo transferencias, estan registradas para control
-- si llenaste `Ventas facturadas`, revisa que:
-  - credito + efectivo = total facturado
+- si hubo transferencias, están registradas para control
 
-## 10. Despues de guardar
+## 10. Después de guardar
 Una vez enviado el Corte Z:
-- revisa el mensaje de exito
+- revisa el mensaje de éxito
 - si eres empleado, llena todo con calma antes de enviar
 - si tienes duda, avisa antes de volver a capturarlo
 
@@ -331,23 +339,27 @@ Una vez enviado el Corte Z:
 ### Error 1: Capturar retiros a bóveda en controles adicionales
 No.
 
-Los `Retiros a bóveda` se capturan en su seccion propia con desglose de billetes y monedas.
+Los `Retiros a bóveda` se capturan en su sección propia con desglose de billetes y monedas.
 
 ### Error 2: Pensar que el fondo inicial genera faltante
 No.
 
-El `Fondo de caja inicial` es informativo y no debe provocar faltante automaticamente.
+El `Fondo de caja inicial` es informativo y no debe provocar faltante automáticamente.
 
 ### Error 3: Contar transferencias como efectivo
 No.
 
-Las transferencias se registran, pero no cuentan como efectivo fisico.
+Las transferencias se registran, pero no cuentan como efectivo físico.
 
 ### Error 4: No llenar Versatil
 Si falta `Arqueo de efectivo en comprobante Versatil`, no se puede revisar correctamente la diferencia.
 
-## Ejemplo rapido
+### Error 5: Dejar en blanco ventas facturadas porque no hubo
+No las dejes en blanco.
 
+Si no hubo ventas facturadas a crédito o en efectivo, captura `0`.
+
+## Ejemplo rápido
 Supongamos:
 - efectivo contado en caja: `3000`
 - retiros a bóveda: `1500`
@@ -360,9 +372,8 @@ Entonces:
 Eso significa que el corte cuadra correctamente.
 
 ## Regla final para el equipo
-Si no estan seguros de donde va algo:
-
-1. si es dinero fisico contado en caja, va en `Arqueo fisico`
+Si no están seguros de dónde va algo:
+1. si es dinero físico contado en caja, va en `Arqueo físico`
 2. si es dinero retirado y guardado en sobre o bóveda, va en `Retiros a bóveda`
 3. si es un movimiento de control, va en `Controles adicionales del cajero`
 4. si es transferencia bancaria, se registra, pero no se cuenta como efectivo

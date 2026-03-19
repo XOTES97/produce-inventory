@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.13";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.13";
+import * as cfg from "./config.js?v=2026.03.19.14";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.14";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.13";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.14";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -69,7 +69,7 @@ const CASH_ADJUSTMENT_META = {
     defaultDirection: "entrada",
   },
   reembolso_dia: {
-    label: "Reembolsos del dia",
+    label: "Reembolsos del día",
     affectsCash: true,
     fixedSign: "negative",
     defaultDirection: "salida",
@@ -1509,8 +1509,8 @@ function computeCashCutDraft(draft) {
   const netCashSalesAmount = roundMoneyValue(cashReceiptsAmount - refundReceiptsAmount);
   const creditInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.credit_invoiced_sales_amount, 0));
   const cashInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.cash_invoiced_sales_amount, 0));
-  const totalInvoicedSalesAmount = roundMoneyValue(numberFromInput(safeDraft.total_invoiced_sales_amount, 0));
-  const invoicedSalesMismatchAmount = roundMoneyValue((creditInvoicedSalesAmount + cashInvoicedSalesAmount) - totalInvoicedSalesAmount);
+  const totalInvoicedSalesAmount = roundMoneyValue(creditInvoicedSalesAmount + cashInvoicedSalesAmount);
+  const invoicedSalesMismatchAmount = 0;
   const salesUsdAmount = roundMoneyValue(numberFromInput(safeDraft.sales_usd_amount, 0));
   const salesUsdMxnAmount = roundMoneyValue(salesUsdAmount * exchangeRate);
   const ticketTotalAmount = roundMoneyValue(numberFromInput(safeDraft.ticket_total_amount, 0));
@@ -1651,7 +1651,7 @@ function normalizeCashCutError(message) {
     case "cash_cut_required":
       return "Falta la captura principal del Corte Z.";
     case "cash_cut_business_date_required":
-      return "Selecciona la fecha del dia que estás cerrando.";
+      return "Selecciona la fecha del día que estás cerrando.";
     case "cash_cut_time_required":
       return "Captura inicio y fin del corte.";
     case "cash_cut_time_invalid":
@@ -1959,6 +1959,14 @@ function optionalLabel(baseText) {
   return [document.createTextNode(`${baseText} `), h("span", { class: "optional-mark", text: "(Opcional)" })];
 }
 
+function requiredLabel(baseText) {
+  return [document.createTextNode(`${baseText} `), h("span", { class: "required-mark", text: "(Obligatorio)" })];
+}
+
+function automaticLabel(baseText) {
+  return [document.createTextNode(`${baseText} `), h("span", { class: "auto-mark", text: "(Automático)" })];
+}
+
 function openCashGuideModal() {
   const backdrop = h("div", { class: "modal-backdrop" });
   const modal = h("div", { class: "modal col" });
@@ -1988,10 +1996,10 @@ function openCashGuideModal() {
         h("li", { text: "Captura primero Total del ticket y Arqueo de efectivo en comprobante Versatil." }),
         h("li", { text: "Llena Datos generales del corte." }),
         h("li", { text: "Llena Datos del ticket POS." }),
-        h("li", { text: "Cuenta el efectivo en Arqueo fisico." }),
+        h("li", { text: "Cuenta el efectivo en Arqueo físico." }),
         h("li", { text: "Si hubo retiros a bóveda, captúralos en su sección." }),
         h("li", { text: "Llena solo los movimientos que sí existieron en Controles adicionales del cajero." }),
-        h("li", { text: "Revisa la Conciliacion automatica y luego guarda." }),
+        h("li", { text: "Revisa la Conciliación automática y luego guarda." }),
       ]),
     ]),
     h("div", { class: "notice" }, [
@@ -2000,8 +2008,19 @@ function openCashGuideModal() {
         h("li", { text: "Datos clave" }),
         h("li", { text: "Datos generales del corte" }),
         h("li", { text: "Datos del ticket POS" }),
-        h("li", { text: "Arqueo fisico" }),
-        h("li", { text: "Conciliacion automatica" }),
+        h("li", { text: "Arqueo físico" }),
+        h("li", { text: "Conciliación automática" }),
+      ]),
+    ]),
+    h("div", { class: "notice" }, [
+      h("div", { style: "font-weight: 780", text: "No dejes en blanco" }),
+      h("ul", { class: "cash-guide-list" }, [
+        h("li", { text: "Factura global / venta" }),
+        h("li", { text: "Ventas a crédito facturadas" }),
+        h("li", { text: "Ventas en efectivo facturadas" }),
+        h("li", { text: "Folio inicio tickets" }),
+        h("li", { text: "Folio fin tickets" }),
+        h("li", { text: "Entregado por" }),
       ]),
     ]),
     h("div", { class: "notice" }, [
@@ -2018,7 +2037,8 @@ function openCashGuideModal() {
         h("li", { text: "Fondo de caja inicial es informativo. No genera faltante por sí solo." }),
         h("li", { text: "Transferencias identificadas se registran, pero no cuentan como efectivo." }),
         h("li", { text: "Retiros a bóveda sí forman parte del efectivo entregado." }),
-        h("li", { text: "Si crédito + efectivo facturado no coincide con total facturado, la app mostrará una advertencia." }),
+        h("li", { text: "Captura siempre ventas a crédito facturadas y ventas en efectivo facturadas, aunque una de las dos sea 0." }),
+        h("li", { text: "Total de ventas facturadas se calcula automáticamente y no cambia la diferencia contra Versatil." }),
       ]),
     ]),
   ]);
@@ -3710,7 +3730,7 @@ function setBatchClosePresetState(value) {
           class: "muted cash-draft-status",
           text:
             captureDraftStatus.state === "saving"
-              ? "Borrador guardandose..."
+              ? "Borrador guardándose..."
               : captureDraftStatus.restored
                 ? "Borrador restaurado y guardado localmente."
                 : "Borrador local activo.",
@@ -6140,7 +6160,7 @@ async function pageCash(pageCtx) {
   const refundReceiptsInput = createInput("number", draft.refund_receipts_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const creditInvoicedSalesInput = createInput("number", draft.credit_invoiced_sales_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const cashInvoicedSalesInput = createInput("number", draft.cash_invoiced_sales_amount, { min: "0", step: "0.01", inputmode: "decimal" });
-  const totalInvoicedSalesInput = createInput("number", draft.total_invoiced_sales_amount, { min: "0", step: "0.01", inputmode: "decimal" });
+  const totalInvoicedSalesInput = createInput("text", "", { readonly: "true" });
   const netCashSalesInput = createInput("text", "", { readonly: "true" });
   const salesMxnInput = createInput("number", draft.sales_mxn_amount, { min: "0", step: "0.01", inputmode: "decimal" });
   const salesUsdInput = createInput("number", draft.sales_usd_amount, { min: "0", step: "0.01", inputmode: "decimal" });
@@ -6154,8 +6174,10 @@ async function pageCash(pageCtx) {
   const listCashierInput = createSelect(cashierOptions, state.cashFilters.cashier_employee_id || "");
 
   function cashField(labelText, inputEl, extraClass = "") {
+    const label = h("label", { class: "cash-form-label" });
+    appendLabelContent(label, labelText);
     return h("div", { class: `cash-form-field${extraClass ? ` ${extraClass}` : ""}` }, [
-      h("label", { class: "cash-form-label", text: labelText }),
+      label,
       inputEl,
     ]);
   }
@@ -6218,7 +6240,9 @@ async function pageCash(pageCtx) {
   function refreshComputed() {
     const computed = computeCashCutDraft(draft);
     netCashSalesInput.value = fmtMoney(computed.netCashSalesAmount);
+    totalInvoicedSalesInput.value = fmtMoney(computed.totalInvoicedSalesAmount);
     salesUsdMxnInput.value = fmtMoney(computed.salesUsdMxnAmount);
+    draft.total_invoiced_sales_amount = computed.totalInvoicedSalesAmount.toFixed(2);
 
     computed.productLines.forEach((row, index) => {
       if (productParticipationEls[index]) {
@@ -6273,23 +6297,19 @@ async function pageCash(pageCtx) {
       vaultWithdrawalsGrandTotalEl.textContent = fmtMoney(computed.totalVaultWithdrawalsAmount);
     }
 
-    if (Math.abs(computed.invoicedSalesMismatchAmount) >= 0.005) {
-      posWarningWrap.replaceChildren(
-        h("div", { class: "cash-pos-warning" }, [
-          h("div", { class: "cash-pos-warning-title", text: "Advertencia de control" }),
-          h(
-            "div",
-            {
-              class: "cash-pos-warning-body",
-              text: `Revisa ventas facturadas: crédito + efectivo = ${fmtMoney(computed.creditInvoicedSalesAmount + computed.cashInvoicedSalesAmount)}, pero Total de ventas facturadas = ${fmtMoney(computed.totalInvoicedSalesAmount)}.`
-            }
-          ),
-          h("div", { class: "cash-pos-warning-note muted", text: "No bloquea el envío del corte, pero conviene corregirlo o confirmarlo antes de guardarlo." }),
-        ])
-      );
-    } else {
-      posWarningWrap.replaceChildren();
-    }
+    posWarningWrap.replaceChildren(
+      h("div", { class: "cash-pos-warning cash-pos-info" }, [
+        h("div", { class: "cash-pos-warning-title", text: "Control de ventas facturadas" }),
+        h(
+          "div",
+          {
+            class: "cash-pos-warning-body",
+            text: `El total de ventas facturadas se calcula automáticamente: crédito ${fmtMoney(computed.creditInvoicedSalesAmount)} + efectivo ${fmtMoney(computed.cashInvoicedSalesAmount)} = ${fmtMoney(computed.totalInvoicedSalesAmount)}.`
+          }
+        ),
+        h("div", { class: "cash-pos-warning-note muted", text: "Este total es informativo y no cambia el faltante o sobrante del corte." }),
+      ])
+    );
 
     setTextSummary("countedMxn", "Efectivo contado MXN", fmtMoney(computed.totalMxnBillsAmount + computed.totalMxnCoinsAmount));
     setTextSummary("countedUsd", "USD contado", fmtMoney(computed.totalUsdAmount, "USD"));
@@ -6319,7 +6339,7 @@ async function pageCash(pageCtx) {
     const header = h("div", { class: "cash-line-grid cash-line-grid-head muted mono" }, [
       h("div", { text: "Producto" }),
       h("div", { text: "Importe" }),
-      h("div", { text: "Participacion" }),
+      h("div", { text: "Participación" }),
       h("div", { text: "Notas" }),
       h("div", { text: "" }),
     ]);
@@ -6597,7 +6617,7 @@ async function pageCash(pageCtx) {
         ? directionInput
         : h("div", { class: "cash-inline-box cash-static-box" }, [directionInput]);
       const supportInput = createInput("text", row.support_reference, { placeholder: "Soporte / referencia" });
-      const noteInput = createInput("text", row.note, { placeholder: "Observacion" });
+      const noteInput = createInput("text", row.note, { placeholder: "Observación" });
       const effectValue = h("div", { class: "mono muted", text: meta?.affectsCash ? fmtMoney(0) : "No entra a efectivo" });
 
       if (!isAmountReadOnly) {
@@ -6661,9 +6681,9 @@ async function pageCash(pageCtx) {
       h("div", { class: "cash-adjustment-grid cash-adjustment-grid-head muted mono" }, [
         h("div", { text: "Concepto" }),
         h("div", { text: "Importe" }),
-        h("div", { text: "Direccion" }),
+        h("div", { text: "Dirección" }),
         h("div", { text: "Soporte" }),
-        h("div", { text: "Observacion" }),
+        h("div", { text: "Observación" }),
         h("div", { text: "Efecto" }),
       ]),
       ...rows
@@ -6784,10 +6804,10 @@ async function pageCash(pageCtx) {
         h("tr", {}, [h("th", { text: "Reembolso recibos" }), h("td", { text: fmtMoney(cut.refund_receipts_amount) }), h("th", { text: "Venta neta de contado" }), h("td", { text: fmtMoney(cut.net_cash_sales_amount) })]),
         h("tr", {}, [h("th", { text: "Ventas a crédito facturadas" }), h("td", { text: fmtMoney(cut.credit_invoiced_sales_amount) }), h("th", { text: "Ventas en efectivo facturadas" }), h("td", { text: fmtMoney(cut.cash_invoiced_sales_amount) })]),
         h("tr", {}, [h("th", { text: "Total de ventas facturadas" }), h("td", { text: fmtMoney(cut.total_invoiced_sales_amount) }), h("th", { text: "Impacto en arqueo" }), h("td", { text: "Informativo; no cambia la diferencia automática" })]),
-        h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dolar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
-        h("tr", {}, [h("th", { text: "Tipo de cambio" }), h("td", { text: Number(cut.exchange_rate || 0).toFixed(4) }), h("th", { text: "Ventas dolar en MXN" }), h("td", { text: fmtMoney(cut.sales_usd_mxn_amount) })]),
+        h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dólar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
+        h("tr", {}, [h("th", { text: "Tipo de cambio" }), h("td", { text: Number(cut.exchange_rate || 0).toFixed(4) }), h("th", { text: "Ventas dólar en MXN" }), h("td", { text: fmtMoney(cut.sales_usd_mxn_amount) })]),
         h("tr", {}, [h("th", { text: "IVA 0%" }), h("td", { text: fmtMoney(cut.iva_zero_amount) }), h("th", { text: "Total del ticket" }), h("td", { text: fmtMoney(cut.ticket_total_amount) })]),
-        h("tr", {}, [h("th", { text: "Arqueo efectivo Versatil" }), h("td", { text: fmtMoney(cut.versatil_cash_count_amount) }), h("th", { text: "Referencia de diferencia" }), h("td", { text: "Fisico contado vs Versatil" })]),
+        h("tr", {}, [h("th", { text: "Arqueo efectivo Versatil" }), h("td", { text: fmtMoney(cut.versatil_cash_count_amount) }), h("th", { text: "Referencia de diferencia" }), h("td", { text: "Físico contado vs Versatil" })]),
       ]),
     ]);
 
@@ -6800,7 +6820,7 @@ async function pageCash(pageCtx) {
       : null;
 
     const productTable = h("table", { class: "table" }, [
-      h("thead", {}, [h("tr", {}, [h("th", { text: "Producto" }), h("th", { text: "Importe" }), h("th", { text: "Participacion" }), h("th", { text: "Notas" })])]),
+      h("thead", {}, [h("tr", {}, [h("th", { text: "Producto" }), h("th", { text: "Importe" }), h("th", { text: "Participación" }), h("th", { text: "Notas" })])]),
       h(
         "tbody",
         {},
@@ -6844,7 +6864,7 @@ async function pageCash(pageCtx) {
     }
 
     const adjustmentsTable = h("table", { class: "table" }, [
-      h("thead", {}, [h("tr", {}, [h("th", { text: "Concepto" }), h("th", { text: "Importe capturado" }), h("th", { text: "Efecto" }), h("th", { text: "Soporte" }), h("th", { text: "Observacion" })])]),
+      h("thead", {}, [h("tr", {}, [h("th", { text: "Concepto" }), h("th", { text: "Importe capturado" }), h("th", { text: "Efecto" }), h("th", { text: "Soporte" }), h("th", { text: "Observación" })])]),
       h(
         "tbody",
         {},
@@ -6908,7 +6928,7 @@ async function pageCash(pageCtx) {
         ]),
         h("div", { class: "cash-print-grid cash-print-grid-2" }, [
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos generales del corte" }), tableScroll(generalTable)]),
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliacion automatica vs Versatil" }), summary]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Conciliación automática vs Versatil" }), summary]),
         ]),
         h("div", { class: "cash-print-grid cash-print-grid-2" }, [
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Datos del ticket POS" }), tableScroll(posTable), posFacturadasWarning].filter(Boolean)),
@@ -6923,7 +6943,7 @@ async function pageCash(pageCtx) {
         h("div", { class: "cash-print-grid cash-print-grid-3" }, [
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Billetes" }), tableScroll(denominationTable(displayBills, "Billete", "MXN"))]),
           h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo MXN - Monedas" }), tableScroll(denominationTable(displayCoins, "Moneda", "MXN"))]),
-          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo USD" }), tableScroll(denominationTable(displayUsd, "Denominacion", "USD"))]),
+          h("div", { class: "card col" }, [h("div", { class: "h1", text: "Arqueo USD" }), tableScroll(denominationTable(displayUsd, "Denominación", "USD"))]),
         ]),
         productCard,
         h("div", { class: "cash-signatures" }, [
@@ -7003,13 +7023,17 @@ async function pageCash(pageCtx) {
     }
   }
 
+  function missingCashNumber(value) {
+    return String(value ?? "").trim() === "";
+  }
+
   async function submitCashCut() {
     if (state.cashSubmitting || !isActive()) return;
     clearCashFlash();
     const startedAtIso = isoFromLocalInput(draft.started_at);
     const endedAtIso = isoFromLocalInput(draft.ended_at);
     if (!trimmedOrEmpty(draft.business_date)) {
-      showCashFormNotice("error", "Selecciona la fecha del dia que estás cerrando.");
+      showCashFormNotice("error", "Selecciona la fecha del día que estás cerrando.");
       return;
     }
     if (!startedAtIso || !endedAtIso) {
@@ -7018,6 +7042,38 @@ async function pageCash(pageCtx) {
     }
     if (!employeeMode && !trimmedOrEmpty(draft.cashier_employee_id)) {
       showCashFormNotice("error", "Selecciona el empleado/cajero del corte.");
+      return;
+    }
+    if (missingCashNumber(draft.ticket_total_amount)) {
+      showCashFormNotice("error", "Captura Total del ticket.");
+      return;
+    }
+    if (missingCashNumber(draft.versatil_cash_count_amount)) {
+      showCashFormNotice("error", "Captura Arqueo de efectivo en comprobante Versatil.");
+      return;
+    }
+    if (missingCashNumber(draft.invoice_sale_amount)) {
+      showCashFormNotice("error", "Captura Factura global / venta.");
+      return;
+    }
+    if (missingCashNumber(draft.credit_invoiced_sales_amount)) {
+      showCashFormNotice("error", "Captura Ventas a crédito facturadas. Si no hubo, escribe 0.");
+      return;
+    }
+    if (missingCashNumber(draft.cash_invoiced_sales_amount)) {
+      showCashFormNotice("error", "Captura Ventas en efectivo facturadas. Si no hubo, escribe 0.");
+      return;
+    }
+    if (!trimmedOrEmpty(draft.ticket_start_folio)) {
+      showCashFormNotice("error", "Captura Folio inicio tickets.");
+      return;
+    }
+    if (!trimmedOrEmpty(draft.ticket_end_folio)) {
+      showCashFormNotice("error", "Captura Folio fin tickets.");
+      return;
+    }
+    if (!trimmedOrEmpty(draft.delivered_by)) {
+      showCashFormNotice("error", "Captura Entregado por.");
       return;
     }
 
@@ -7169,12 +7225,6 @@ async function pageCash(pageCtx) {
     refreshComputed();
     queueCashDraftSave();
   });
-  totalInvoicedSalesInput.addEventListener("input", () => {
-    clearCashFlash();
-    draft.total_invoiced_sales_amount = totalInvoicedSalesInput.value;
-    refreshComputed();
-    queueCashDraftSave();
-  });
   salesMxnInput.addEventListener("input", () => {
     clearCashFlash();
     draft.sales_mxn_amount = salesMxnInput.value;
@@ -7286,7 +7336,7 @@ async function pageCash(pageCtx) {
         class: "muted cash-draft-status",
         text:
           cashDraftStatus.state === "saving"
-            ? "Borrador guardandose..."
+            ? "Borrador guardándose..."
             : cashDraftStatus.restored
               ? "Borrador restaurado y guardado localmente."
               : "Borrador local activo.",
@@ -7301,31 +7351,32 @@ async function pageCash(pageCtx) {
         h("div", { class: "muted cash-priority-note", text: "Captura primero el Total del ticket y el Arqueo de efectivo en comprobante Versatil para que el cierre y la diferencia sean fáciles de revisar." }),
       ]),
       h("div", { class: "cash-priority-grid" }, [
-        cashField("Total del ticket", ticketTotalInput, "cash-priority-field"),
-        cashField("Arqueo de efectivo en comprobante Versatil", versatilCashCountInput, "cash-priority-field cash-priority-accent"),
+        cashField(requiredLabel("Total del ticket"), ticketTotalInput, "cash-priority-field"),
+        cashField(requiredLabel("Arqueo de efectivo en comprobante Versatil"), versatilCashCountInput, "cash-priority-field cash-priority-accent"),
       ]),
     ]),
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Datos generales del corte" }),
-    h("div", { class: "grid3" }, [cashField("Fecha del negocio", businessDateInput), cashField("Sucursal", branchNameInput), cashField("Tipo de corte", cutTypeInput)]),
-    h("div", { class: "grid3" }, [cashField("Folio corte", cutFolioInput), cashField("Inicio corte", startedAtInput), cashField("Fin corte", endedAtInput)]),
-    h("div", { class: "grid3" }, [employeeMode ? cashField("Empleado", cashierInput) : cashField("Empleado / Cajero", cashierInput), cashField("Cajero sistema", cashierSystemInput), cashField("Clientes atendidos", customersServedInput)]),
-    h("div", { class: "grid3" }, [cashField("Folio inicio tickets", ticketStartFolioInput), cashField("Folio fin tickets", ticketEndFolioInput), cashField("Entregado por", deliveredByInput)]),
+    h("div", { class: "grid3" }, [cashField(requiredLabel("Fecha del negocio"), businessDateInput), cashField("Sucursal", branchNameInput), cashField("Tipo de corte", cutTypeInput)]),
+    h("div", { class: "grid3" }, [cashField("Folio corte", cutFolioInput), cashField(requiredLabel("Inicio corte"), startedAtInput), cashField(requiredLabel("Fin corte"), endedAtInput)]),
+    h("div", { class: "grid3" }, [employeeMode ? cashField(requiredLabel("Empleado"), cashierInput) : cashField(requiredLabel("Empleado / Cajero"), cashierInput), cashField("Cajero sistema", cashierSystemInput), cashField("Clientes atendidos", customersServedInput)]),
+    h("div", { class: "grid3" }, [cashField(requiredLabel("Folio inicio tickets"), ticketStartFolioInput), cashField(requiredLabel("Folio fin tickets"), ticketEndFolioInput), cashField(requiredLabel("Entregado por"), deliveredByInput)]),
     h("div", { class: "grid2" }, [cashField("Recibido por", receivedByInput), cashField("Observaciones", observationsInput)]),
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Datos del ticket POS" }),
     h("div", { class: "muted cash-section-note", text: "Los dos importes más importantes ya están arriba para que resalten desde el inicio." }),
-    h("div", { class: "muted cash-section-note", text: "Las ventas facturadas se registran para control. No cambian automáticamente el arqueo; la diferencia sigue comparándose contra Versatil." }),
+    h("div", { class: "muted cash-section-note", text: "Factura global / venta, ventas facturadas y folios de tickets ya no son opcionales. Si un importe no aplica ese día, captura 0." }),
+    h("div", { class: "muted cash-section-note", text: "El total de ventas facturadas se calcula automáticamente. Es informativo y no cambia automáticamente el arqueo; la diferencia sigue comparándose contra Versatil." }),
     posWarningWrap,
-    h("div", { class: "grid3" }, [cashField("Factura global / venta", invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Reembolso recibos", refundReceiptsInput)]),
-    h("div", { class: "grid3" }, [cashField("Ventas a crédito facturadas", creditInvoicedSalesInput), cashField("Ventas en efectivo facturadas", cashInvoicedSalesInput), cashField("Total de ventas facturadas", totalInvoicedSalesInput)]),
-    h("div", { class: "grid3" }, [cashField("Venta neta de contado", netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dolar (USD)", salesUsdInput)]),
-    h("div", { class: "grid3" }, [cashField("Tipo de cambio", exchangeRateInput), cashField("Ventas dolar en MXN", salesUsdMxnInput), cashField("IVA 0%", ivaZeroInput)]),
+    h("div", { class: "grid3" }, [cashField(requiredLabel("Factura global / venta"), invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Reembolso recibos", refundReceiptsInput)]),
+    h("div", { class: "grid3" }, [cashField(requiredLabel("Ventas a crédito facturadas"), creditInvoicedSalesInput), cashField(requiredLabel("Ventas en efectivo facturadas"), cashInvoicedSalesInput), cashField(automaticLabel("Total de ventas facturadas"), totalInvoicedSalesInput)]),
+    h("div", { class: "grid3" }, [cashField(automaticLabel("Venta neta de contado"), netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dólar (USD)", salesUsdInput)]),
+    h("div", { class: "grid3" }, [cashField("Tipo de cambio", exchangeRateInput), cashField(automaticLabel("Ventas dólar en MXN"), salesUsdMxnInput), cashField("IVA 0%", ivaZeroInput)]),
     h("div", { class: "divider" }),
     h("div", { class: "row-wrap" }, [h("div", { class: "h1", text: "Desglose de venta por producto" }), h("span", { class: "optional-mark", text: "(Opcional)" })]),
     productRowsWrap,
     h("div", { class: "divider" }),
-    h("div", { class: "h1", text: "Arqueo fisico" }),
+    h("div", { class: "h1", text: "Arqueo físico" }),
     denominationWrap,
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Retiros a bóveda" }),
@@ -7334,7 +7385,7 @@ async function pageCash(pageCtx) {
     h("div", { class: "h1", text: "Controles adicionales del cajero" }),
     adjustmentsWrap,
     h("div", { class: "divider" }),
-    h("div", { class: "h1", text: "Conciliacion automatica" }),
+    h("div", { class: "h1", text: "Conciliación automática" }),
     summaryWrap,
     h("div", { class: "row-wrap" }, [submitBtn, resetBtn]),
   ]);
@@ -7379,10 +7430,10 @@ async function pageCash(pageCtx) {
     buildSummaryCard("countedMxn", "Efectivo contado MXN"),
     buildSummaryCard("countedUsd", "USD contado"),
     buildSummaryCard("countedUsdMxn", "USD contado en MXN"),
-    buildSummaryCard("physicalTotal", "Total fisico contado"),
+    buildSummaryCard("physicalTotal", "Total físico contado"),
     buildSummaryCard("initialFund", "Fondo de caja inicial"),
     buildSummaryCard("vaultWithdrawals", "Retiros a bóveda"),
-    buildSummaryCard("comparablePhysical", "Fisico para comparacion"),
+    buildSummaryCard("comparablePhysical", "Físico para comparación"),
     buildSummaryCard("versatilCash", "Arqueo efectivo Versatil"),
     buildSummaryCard("expectedCash", "Esperado calculado"),
     buildSummaryCard("adjustments", "Ajustes que afectan efectivo"),
