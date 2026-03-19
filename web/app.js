@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.09";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.09";
+import * as cfg from "./config.js?v=2026.03.19.10";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.10";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.09";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.10";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -1803,6 +1803,15 @@ function openCashGuideModal() {
   });
 
   const sectionList = h("div", { class: "col", style: "gap: 8px" }, [
+    h("div", { class: "cash-guide-highlight" }, [
+      h("div", { class: "cash-guide-highlight-title", text: "Antes de empezar" }),
+      h("div", { class: "cash-guide-highlight-body", text: "Estas secciones pueden dejarse vacías si no aplican ese día:" }),
+      h("div", { class: "cash-guide-pill-row" }, [
+        h("span", { class: "cash-guide-pill", text: "Desglose de venta por producto (Opcional)" }),
+        h("span", { class: "cash-guide-pill", text: "Retiros a bóveda (solo si hubo)" }),
+        h("span", { class: "cash-guide-pill", text: "Controles adicionales (solo si aplica)" }),
+      ]),
+    ]),
     h("div", { class: "notice" }, [
       h("div", { style: "font-weight: 780", text: "Orden recomendado" }),
       h("ol", { class: "cash-guide-list" }, [
