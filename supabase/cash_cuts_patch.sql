@@ -211,11 +211,21 @@ set affects_cash = false,
     signed_amount = amount
 where adjustment_type = 'retiro_boveda';
 
+update public.cash_cut_adjustments
+set affects_cash = false,
+    signed_amount = -amount
+where adjustment_type = 'reembolso_dia';
+
+update public.cash_cuts
+set net_cash_sales_amount = round(coalesce(cash_receipts_amount, 0) - coalesce(refund_receipts_amount, 0), 2),
+    total_invoiced_sales_amount = round(coalesce(credit_invoiced_sales_amount, 0) + coalesce(cash_invoiced_sales_amount, 0), 2),
+    sales_usd_mxn_amount = round(coalesce(sales_usd_amount, 0) * coalesce(exchange_rate, 0), 2);
+
 with adjustment_rollup as (
   select
     cash_cut_id,
     round(coalesce(sum(case when adjustment_type = 'fondo_inicial' then amount else 0 end), 0), 2) as initial_fund_amount,
-    round(coalesce(sum(case when affects_cash and adjustment_type <> 'fondo_inicial' then signed_amount else 0 end), 0), 2) as total_cash_adjustments_amount,
+    round(coalesce(sum(case when affects_cash and adjustment_type not in ('fondo_inicial', 'reembolso_dia') then signed_amount else 0 end), 0), 2) as total_cash_adjustments_amount,
     round(coalesce(sum(case when adjustment_type = 'transferencia_identificada' then signed_amount else 0 end), 0), 2) as identified_transfers_amount,
     round(coalesce(sum(case when adjustment_type = 'retiro_boveda' then amount else 0 end), 0), 2) as vault_withdrawals_total_amount
   from public.cash_cut_adjustments
@@ -228,7 +238,7 @@ set
   identified_transfers_amount = coalesce(ar.identified_transfers_amount, 0),
   vault_withdrawals_total_amount = coalesce(ar.vault_withdrawals_total_amount, 0),
   delivered_cash_amount = round(coalesce(c.total_counted_cash_amount, 0) + coalesce(ar.vault_withdrawals_total_amount, 0), 2),
-  expected_cash_amount = round(coalesce(c.net_cash_sales_amount, 0) + coalesce(ar.total_cash_adjustments_amount, 0), 2),
+  expected_cash_amount = round(coalesce(ar.initial_fund_amount, 0) + coalesce(c.net_cash_sales_amount, 0) + coalesce(ar.total_cash_adjustments_amount, 0), 2),
   difference_amount = round((coalesce(c.total_counted_cash_amount, 0) + coalesce(ar.vault_withdrawals_total_amount, 0)) - coalesce(c.versatil_cash_count_amount, 0), 2)
 from adjustment_rollup ar
 where c.id = ar.cash_cut_id;
@@ -397,16 +407,35 @@ begin
   v_invoice_sale_amount := coalesce(nullif(cut->>'invoice_sale_amount', '')::numeric, 0);
   v_cash_receipts_amount := coalesce(nullif(cut->>'cash_receipts_amount', '')::numeric, 0);
   v_refund_receipts_amount := coalesce(nullif(cut->>'refund_receipts_amount', '')::numeric, 0);
-  v_net_cash_sales_amount := coalesce(nullif(cut->>'net_cash_sales_amount', '')::numeric, 0);
   v_credit_invoiced_sales_amount := coalesce(nullif(cut->>'credit_invoiced_sales_amount', '')::numeric, 0);
   v_cash_invoiced_sales_amount := coalesce(nullif(cut->>'cash_invoiced_sales_amount', '')::numeric, 0);
-  v_total_invoiced_sales_amount := coalesce(nullif(cut->>'total_invoiced_sales_amount', '')::numeric, 0);
   v_sales_mxn_amount := coalesce(nullif(cut->>'sales_mxn_amount', '')::numeric, 0);
   v_sales_usd_amount := coalesce(nullif(cut->>'sales_usd_amount', '')::numeric, 0);
   v_iva_zero_amount := coalesce(nullif(cut->>'iva_zero_amount', '')::numeric, 0);
   v_ticket_total_amount := coalesce(nullif(cut->>'ticket_total_amount', '')::numeric, 0);
   v_versatil_cash_count_amount := coalesce(nullif(cut->>'versatil_cash_count_amount', '')::numeric, 0);
+  v_net_cash_sales_amount := round(v_cash_receipts_amount - v_refund_receipts_amount, 2);
+  v_total_invoiced_sales_amount := round(v_credit_invoiced_sales_amount + v_cash_invoiced_sales_amount, 2);
   v_sales_usd_mxn_amount := round(v_sales_usd_amount * v_exchange_rate, 2);
+
+  if v_exchange_rate <= 0 then
+    raise exception 'cash_cut_exchange_rate_invalid';
+  end if;
+
+  if least(
+    v_invoice_sale_amount,
+    v_cash_receipts_amount,
+    v_refund_receipts_amount,
+    v_credit_invoiced_sales_amount,
+    v_cash_invoiced_sales_amount,
+    v_sales_mxn_amount,
+    v_sales_usd_amount,
+    v_iva_zero_amount,
+    v_ticket_total_amount,
+    v_versatil_cash_count_amount
+  ) < 0 then
+    raise exception 'cash_cut_amount_invalid';
+  end if;
 
   perform pg_advisory_xact_lock(hashtext(concat('cash_cut:', v_actor_workspace_id::text, ':', v_business_date::text)));
 
@@ -681,7 +710,7 @@ begin
         v_signed_amount := v_amount;
         v_initial_fund_amount := v_amount;
       when 'reembolso_dia' then
-        v_affects_cash := true;
+        v_affects_cash := false;
         v_signed_amount := -v_amount;
       when 'gasto_caja' then
         v_affects_cash := true;
@@ -737,6 +766,8 @@ begin
       null;
     elsif v_adjustment_type = 'retiro_boveda' then
       null;
+    elsif v_adjustment_type = 'reembolso_dia' then
+      null;
     elsif v_affects_cash then
       v_total_cash_adjustments_amount := v_total_cash_adjustments_amount + v_signed_amount;
     else
@@ -744,7 +775,7 @@ begin
     end if;
   end loop;
 
-  v_expected_cash_amount := round(v_net_cash_sales_amount + v_total_cash_adjustments_amount, 2);
+  v_expected_cash_amount := round(v_initial_fund_amount + v_net_cash_sales_amount + v_total_cash_adjustments_amount, 2);
   v_difference_amount := round(v_delivered_cash_amount - v_versatil_cash_count_amount, 2);
 
   update public.cash_cuts

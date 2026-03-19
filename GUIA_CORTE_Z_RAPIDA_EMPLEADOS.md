@@ -78,7 +78,7 @@ Si alguna venta facturada no aplica, captura `0`.
 - usa `Agregar retiro a bóveda adicional` si hubo más de uno
 
 ### Controles adicionales del cajero
-- `Fondo de caja inicial`: informativo
+- `Fondo de caja inicial`: entra al esperado, pero no cambia por sí solo la diferencia vs Versatil
 - `Reembolsos del día`: automático
 - `Retiros a bóveda`: informativo
 - `Gastos`, `Depósitos / retiros parciales`, `Vales`, `Cheques`, `Transferencias`, `Otros ajustes`: solo si ocurrieron

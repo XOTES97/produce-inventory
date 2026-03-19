@@ -248,12 +248,16 @@ Es informativo.
 Normalmente será:
 - `1000`
 
-No genera faltante ni sobrante por sí solo.
+Forma parte del esperado calculado, pero no genera faltante ni sobrante por sí solo.
 
 ### Reembolsos del día (Automático)
 Se llena automáticamente desde `Reembolso recibos`.
 
 No se captura manualmente aquí.
+
+También es importante saber esto:
+- ya viene descontado dentro de `Venta neta de contado`
+- no debe volver a descontarse aparte dentro del esperado
 
 ### Gastos pagados con caja (Opcional, solo si hubo gasto)
 Captura aquí gastos pagados en efectivo desde la caja.

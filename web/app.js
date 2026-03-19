@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.14";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.14";
+import * as cfg from "./config.js?v=2026.03.19.15";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.15";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.14";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.15";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -70,7 +70,7 @@ const CASH_ADJUSTMENT_META = {
   },
   reembolso_dia: {
     label: "Reembolsos del día",
-    affectsCash: true,
+    affectsCash: false,
     fixedSign: "negative",
     defaultDirection: "salida",
     syncFromRefunds: true,
@@ -1580,6 +1580,9 @@ function computeCashCutDraft(draft) {
     else signedAmount = rawAmount;
     signedAmount = roundMoneyValue(signedAmount);
     if (type === "fondo_inicial") initialFundAmount = rawAmount;
+    else if (type === "reembolso_dia") {
+      // Refunds are already included in net cash sales.
+    }
     else if (type === "retiro_boveda") {
       // Vault withdrawals remain part of the delivered cash and do not reduce expected cash.
     }
@@ -1603,7 +1606,7 @@ function computeCashCutDraft(draft) {
   totalCashAdjustmentsAmount = roundMoneyValue(totalCashAdjustmentsAmount);
   identifiedTransfersAmount = roundMoneyValue(identifiedTransfersAmount);
 
-  const expectedCashAmount = roundMoneyValue(netCashSalesAmount + totalCashAdjustmentsAmount);
+  const expectedCashAmount = roundMoneyValue(initialFundAmount + netCashSalesAmount + totalCashAdjustmentsAmount);
   const comparableCountedCashAmount = roundMoneyValue(totalDeliveredCashAmount);
   const differenceAmount = roundMoneyValue(totalDeliveredCashAmount - versatilCashCountAmount);
 
@@ -1666,6 +1669,10 @@ function normalizeCashCutError(message) {
       return "Hay una denominación inválida dentro de un retiro a bóveda.";
     case "cash_cut_adjustment_amount_invalid":
       return "Hay un ajuste con importe inválido.";
+    case "cash_cut_amount_invalid":
+      return "Hay un importe del Corte Z con valor inválido.";
+    case "cash_cut_exchange_rate_invalid":
+      return "El tipo de cambio debe ser mayor a 0.";
     case "cash_cut_product_label_required":
       return "Cada linea de producto con importe debe tener nombre.";
     case "cash_cut_product_amount_invalid":
@@ -1701,13 +1708,15 @@ function cashComparableCountedAmount(source) {
 }
 
 function cashAdjustmentEffectText(row) {
-  if (row?.adjustment_type === "fondo_inicial") return "Base fija / no afecta diferencia";
+  if (row?.adjustment_type === "fondo_inicial") return "Entra al esperado / no afecta diferencia";
+  if (row?.adjustment_type === "reembolso_dia") return "Ya descontado en venta neta";
   if (row?.adjustment_type === "retiro_boveda") return "Incluido en efectivo entregado";
   if (!row?.affects_cash) return "No entra a efectivo";
   return fmtSignedMoney(row.signed_amount);
 }
 
 function cashAdjustmentEffectClass(row) {
+  if (row?.adjustment_type === "reembolso_dia") return "mono muted";
   if (row?.adjustment_type === "retiro_boveda") return "mono muted";
   if (!row?.affects_cash) return "mono muted";
   return `mono ${Number(row?.signed_amount || 0) < 0 ? "delta-neg" : "delta-pos"}`;
@@ -6319,7 +6328,7 @@ async function pageCash(pageCtx) {
     setTextSummary("vaultWithdrawals", "Retiros a bóveda", fmtMoney(computed.totalVaultWithdrawalsAmount));
     setTextSummary("comparablePhysical", "Total efectivo entregado", fmtMoney(computed.comparableCountedCashAmount));
     setTextSummary("versatilCash", "Arqueo efectivo Versatil", fmtMoney(computed.versatilCashCountAmount));
-    setTextSummary("expectedCash", "Esperado calculado", fmtMoney(computed.expectedCashAmount));
+    setTextSummary("expectedCash", "Esperado calculado (incluye fondo)", fmtMoney(computed.expectedCashAmount));
     setTextSummary("adjustments", "Ajustes que afectan efectivo", fmtSignedMoney(computed.totalCashAdjustmentsAmount));
     setTextSummary("transfers", "Transferencias identificadas", fmtSignedMoney(computed.identifiedTransfersAmount));
     setTextSummary(
@@ -6662,9 +6671,9 @@ async function pageCash(pageCtx) {
                 : adjustmentType === "transferencia_identificada"
                   ? "Se registra para control, pero no aumenta el efectivo esperado."
                   : adjustmentType === "reembolso_dia"
-                    ? "Se toma automáticamente del POS y descuenta efectivo."
+                    ? "Se toma automáticamente del POS y ya está descontado en Venta neta de contado."
                     : adjustmentType === "fondo_inicial"
-                      ? "Referencia informativa. No suma ni resta en la diferencia contra Versatil."
+                      ? "Entra al esperado calculado, pero no suma ni resta en la diferencia contra Versatil."
                       : "El sistema aplica el signo según el concepto o dirección.",
           }),
         ]),
@@ -6892,7 +6901,7 @@ async function pageCash(pageCtx) {
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Retiros a bóveda" }), h("strong", { class: "mono", text: fmtMoney(cut.vault_withdrawals_total_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Total efectivo entregado" }), h("strong", { class: "mono", text: fmtMoney(cashComparableCountedAmount(cut)) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Arqueo efectivo Versatil" }), h("strong", { class: "mono", text: fmtMoney(cut.versatil_cash_count_amount) })]),
-      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado calculado" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
+      h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Esperado calculado (incluye fondo)" }), h("strong", { class: "mono", text: fmtMoney(cut.expected_cash_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Ajustes / otros movimientos" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.total_cash_adjustments_amount) })]),
       h("div", { class: "cash-report-summary-row" }, [h("span", { text: "Transferencias identificadas" }), h("strong", { class: "mono", text: fmtSignedMoney(cut.identified_transfers_amount) })]),
       h("div", { class: `cash-report-summary-row cash-report-diff cash-diff-${differenceTone}` }, [h("span", { text: "Diferencia (sobrante/faltante vs Versatil)" }), h("strong", { class: "mono", text: cashDifferenceText(cut.difference_amount) })]),
@@ -7435,7 +7444,7 @@ async function pageCash(pageCtx) {
     buildSummaryCard("vaultWithdrawals", "Retiros a bóveda"),
     buildSummaryCard("comparablePhysical", "Físico para comparación"),
     buildSummaryCard("versatilCash", "Arqueo efectivo Versatil"),
-    buildSummaryCard("expectedCash", "Esperado calculado"),
+    buildSummaryCard("expectedCash", "Esperado calculado (incluye fondo)"),
     buildSummaryCard("adjustments", "Ajustes que afectan efectivo"),
     buildSummaryCard("transfers", "Transferencias identificadas"),
     buildSummaryCard("difference", "Diferencia vs Versatil")
