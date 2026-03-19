@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.11";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.11";
+import * as cfg from "./config.js?v=2026.03.19.12";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.12";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.11";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.12";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -218,6 +218,10 @@ const STORAGE_KEYS = {
   cashDraft: "produce_inventory.cash.draft.v1",
 };
 const NETWORK_TIMEOUT_MS = 45000;
+const LOCAL_DRAFT_DB_NAME = "produce_inventory_local_drafts";
+const LOCAL_DRAFT_DB_VERSION = 1;
+const LOCAL_DRAFT_DB_STORE = "draft_payloads";
+const CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY = "captureEmployeeProofs";
 
 function isAppInForeground() {
   const visibility = String(document?.visibilityState || "visible");
@@ -480,15 +484,73 @@ function revokeObjectUrl(url) {
   }
 }
 
-function clearEmployeeCaptureProofs() {
+async function loadStoredEmployeeCaptureProofs() {
+  try {
+    const wrapped = await localDraftStoreGet(CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY);
+    if (!wrapped || typeof wrapped !== "object") return [];
+    if (!wrapped.timestamp || Date.now() - Number(wrapped.timestamp) > CAPTURE_DRAFT_TTL_MS) {
+      await localDraftStoreDelete(CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY);
+      return [];
+    }
+    const items = Array.isArray(wrapped.items) ? wrapped.items : [];
+    return items
+      .map((item) => {
+        const blob = item?.blob;
+        if (!(blob instanceof Blob)) return null;
+        const file = new File([blob], String(item?.name || "employee-proof.jpg"), {
+          type: String(item?.type || blob.type || "image/jpeg"),
+          lastModified: Number(item?.lastModified || Date.now()),
+        });
+        return {
+          file,
+          captured_at_iso: String(item?.captured_at_iso || new Date().toISOString()),
+          stamp_text: String(item?.stamp_text || ""),
+          preview_url: URL.createObjectURL(file),
+        };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function persistEmployeeCaptureProofs() {
+  try {
+    const items = Array.isArray(state.captureEmployeeProofs) ? state.captureEmployeeProofs : [];
+    if (items.length === 0) {
+      await localDraftStoreDelete(CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY);
+      return;
+    }
+    await localDraftStoreSet(CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY, {
+      timestamp: Date.now(),
+      items: items
+        .filter((item) => item?.file instanceof Blob)
+        .map((item) => ({
+          blob: item.file,
+          name: String(item.file?.name || "employee-proof.jpg"),
+          type: String(item.file?.type || "image/jpeg"),
+          lastModified: Number(item.file?.lastModified || Date.now()),
+          captured_at_iso: String(item.captured_at_iso || new Date().toISOString()),
+          stamp_text: String(item.stamp_text || ""),
+        })),
+    });
+  } catch {
+    // ignore local persistence failures
+  }
+}
+
+function clearEmployeeCaptureProofs({ clearStored = false } = {}) {
   for (const item of state.captureEmployeeProofs || []) {
     revokeObjectUrl(item?.preview_url);
   }
   state.captureEmployeeProofs = [];
+  if (clearStored) {
+    void localDraftStoreDelete(CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY);
+  }
 }
 
 async function signOutCurrentUser() {
-  clearEmployeeCaptureProofs();
+  clearEmployeeCaptureProofs({ clearStored: true });
   await supabase.auth.signOut();
   navTo("login");
 }
@@ -890,6 +952,73 @@ function buildCashDraft(payload) {
     timestamp: Date.now(),
     payload,
   };
+}
+
+function openLocalDraftDb() {
+  return new Promise((resolve, reject) => {
+    try {
+      if (typeof indexedDB === "undefined") {
+        resolve(null);
+        return;
+      }
+      const request = indexedDB.open(LOCAL_DRAFT_DB_NAME, LOCAL_DRAFT_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(LOCAL_DRAFT_DB_STORE)) {
+          db.createObjectStore(LOCAL_DRAFT_DB_STORE);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("No se pudo abrir IndexedDB."));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function localDraftStoreGet(key) {
+  const db = await openLocalDraftDb();
+  if (!db) return null;
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DRAFT_DB_STORE, "readonly");
+    const store = tx.objectStore(LOCAL_DRAFT_DB_STORE);
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result ?? null);
+    request.onerror = () => reject(request.error || new Error("No se pudo leer el borrador local."));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function localDraftStoreSet(key, value) {
+  const db = await openLocalDraftDb();
+  if (!db) return;
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DRAFT_DB_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_DRAFT_DB_STORE);
+    const request = store.put(value, key);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("No se pudo guardar el borrador local."));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
+}
+
+async function localDraftStoreDelete(key) {
+  const db = await openLocalDraftDb();
+  if (!db) return;
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DRAFT_DB_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_DRAFT_DB_STORE);
+    const request = store.delete(key);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("No se pudo borrar el borrador local."));
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
+    tx.onerror = () => db.close();
+  });
 }
 
 async function withTimeout(promise, ms, label) {
@@ -2413,6 +2542,8 @@ async function pageCapture(pageCtx) {
     msg.appendChild(notice(state.captureFlashNotice.kind || "", String(state.captureFlashNotice.text)));
     state.captureFlashNotice = null;
   }
+  let restoredCaptureDraftNotice = false;
+  let restoredProofDraftNotice = false;
 
   if (products.length === 0 || qualities.length === 0) {
     const card = h("div", { class: "card col" }, [
@@ -2702,6 +2833,7 @@ function setBatchClosePresetState(value) {
                 onclick: () => {
                   const removed = state.captureEmployeeProofs.splice(index, 1)[0];
                   revokeObjectUrl(removed?.preview_url);
+                  void persistEmployeeCaptureProofs();
                   renderEmployeeProofs();
                 },
               },
@@ -2719,6 +2851,7 @@ function setBatchClosePresetState(value) {
       const captured = await openEmployeeCameraCaptureModal({ employeeName: actorDisplayName });
       if (!captured) return;
       state.captureEmployeeProofs.push(captured);
+      await persistEmployeeCaptureProofs();
       renderEmployeeProofs();
     } catch (error) {
       employeeProofMsg.replaceChildren(
@@ -2760,7 +2893,7 @@ function setBatchClosePresetState(value) {
           class: "btn btn-ghost",
           type: "button",
           onclick: () => {
-            clearEmployeeCaptureProofs();
+            clearEmployeeCaptureProofs({ clearStored: true });
             renderEmployeeProofs();
           },
         },
@@ -2853,9 +2986,9 @@ function setBatchClosePresetState(value) {
 
   function applyCaptureDraft() {
     const wrapped = loadCaptureDraft();
-    if (!wrapped?.payload || typeof wrapped.payload !== "object") return;
+    if (!wrapped?.payload || typeof wrapped.payload !== "object") return false;
     const draft = wrapped.payload;
-    if (!draft) return;
+    if (!draft) return false;
     const allowed = availableMovementTypes;
       if (draft.movementType && allowed.includes(String(draft.movementType))) {
         currentMode = String(draft.movementType);
@@ -2914,6 +3047,7 @@ function setBatchClosePresetState(value) {
       draftRestoreInProgress = false;
       queueDraftSave();
     }
+    return true;
   }
 
   function setSkuSelectOptions(selectEl, items, emptyLabel, preserve = true) {
@@ -3124,7 +3258,7 @@ function setBatchClosePresetState(value) {
     mermaExhibition.checked = false;
     mermaDegustation.checked = false;
     if (proofs) proofs.value = "";
-    clearEmployeeCaptureProofs();
+    clearEmployeeCaptureProofs({ clearStored: true });
     renderEmployeeProofs();
     occurredAtDirtyWhileUnlocked = false;
     if (isActorManager && lockOccurredAt.checked) {
@@ -3606,7 +3740,30 @@ function setBatchClosePresetState(value) {
       ]),
   ]);
 
-  applyCaptureDraft();
+  if (!isActorManager && state.captureEmployeeProofs.length === 0) {
+    const restoredProofs = await loadStoredEmployeeCaptureProofs();
+    if (!isActive()) return;
+    if (restoredProofs.length > 0) {
+      clearEmployeeCaptureProofs();
+      state.captureEmployeeProofs = restoredProofs;
+      restoredProofDraftNotice = true;
+      renderEmployeeProofs();
+    }
+  }
+
+  restoredCaptureDraftNotice = applyCaptureDraft();
+  if (msg.childElementCount === 0 && (restoredCaptureDraftNotice || restoredProofDraftNotice)) {
+    msg.appendChild(
+      notice(
+        "ok",
+        restoredCaptureDraftNotice && restoredProofDraftNotice
+          ? "Se restauró tu borrador anterior, incluyendo la evidencia pendiente."
+          : restoredProofDraftNotice
+            ? "Se restauró tu evidencia pendiente."
+            : "Se restauró tu borrador anterior."
+      )
+    );
+  }
   card.addEventListener("input", () => queueDraftSave());
   card.addEventListener("change", () => queueDraftSave());
   layout(ROUTE_TITLES.capture, card);
@@ -5848,10 +6005,12 @@ async function pageCash(pageCtx) {
   const isActive = () => isPageContextActive(pageCtx);
   const managerMode = isManager();
   const employeeMode = actorRole() === "employee";
+  let restoredCashDraftNotice = false;
   if (!state.cashDraft) {
     const wrapped = loadCashDraft();
     if (wrapped?.payload && typeof wrapped.payload === "object") {
       state.cashDraft = wrapped.payload;
+      restoredCashDraftNotice = true;
     }
   }
   const draft = ensureCashDraft();
@@ -7165,6 +7324,9 @@ async function pageCash(pageCtx) {
     buildSummaryCard("difference", "Diferencia vs Versatil")
   );
   showStoredCashNotice();
+  if (formMsg.childElementCount === 0 && restoredCashDraftNotice) {
+    formMsg.appendChild(notice("ok", "Se restauró tu borrador anterior del Corte Z."));
+  }
   refreshComputed();
   layout(ROUTE_TITLES.cash, page);
 
