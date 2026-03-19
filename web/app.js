@@ -1,5 +1,5 @@
-import * as cfg from "./config.js?v=2026.03.17.01";
-import { supabase } from "./supabaseClient.js?v=2026.03.17.01";
+import * as cfg from "./config.js?v=2026.03.19.01";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.01";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
 const APP_VERSION = cfg.APP_VERSION || "2026.03.17.01";
@@ -1624,12 +1624,29 @@ function notice(kind, text) {
   return h("div", { class: `notice ${kind || ""}` }, [h("div", { text })]);
 }
 
+function appendLabelContent(labelEl, labelContent) {
+  const items = Array.isArray(labelContent) ? labelContent : [labelContent];
+  for (const item of items) {
+    if (item === null || item === undefined) continue;
+    if (typeof item === "string") labelEl.appendChild(document.createTextNode(item));
+    else labelEl.appendChild(item);
+  }
+}
+
+function optionalLabel(baseText) {
+  return [document.createTextNode(`${baseText} `), h("span", { class: "optional-mark", text: "(Opcional)" })];
+}
+
 function field(labelText, inputEl) {
-  return h("div", {}, [h("label", { text: labelText }), inputEl]);
+  const label = h("label");
+  appendLabelContent(label, labelText);
+  return h("div", {}, [label, inputEl]);
 }
 
 function labeledField(labelText, inputEl, inputId) {
-  return h("div", {}, [h("label", { for: inputId, text: labelText }), inputEl]);
+  const label = h("label", { for: inputId });
+  appendLabelContent(label, labelText);
+  return h("div", {}, [label, inputEl]);
 }
 
 function createInput(type = "text", value = "", attrs = {}) {
@@ -5460,7 +5477,7 @@ async function pageCutoffs(pageCtx) {
       h("div", { class: "h1", text: "Nuevo corte fisico" }),
       h("div", { class: "muted", text: "Registra un corte para comparar inventario fisico vs sistema." }),
       createMsg,
-      h("div", { class: "grid2" }, [field("Inicio", createStarted), field("Cierre (opcional)", createEnded)]),
+      h("div", { class: "grid2" }, [field("Inicio", createStarted), field(optionalLabel("Cierre"), createEnded)]),
       field("Notas", createNotes),
       h("div", { class: "row-wrap" }, [createBtn]),
     ]),
@@ -5477,7 +5494,7 @@ async function pageCutoffs(pageCtx) {
         h("div", { class: "h1", text: "Agregar pesaje por SKU" }),
         h("div", { class: "grid2" }, [field("SKU", lineSku), field("Fecha/hora pesaje", lineMeasuredAt)]),
         lineMeasuredAtLockRow,
-        h("div", { class: "grid2" }, [field("Peso (kg)", lineWeight), field("Evidencia (opcional)", lineProofs)]),
+        h("div", { class: "grid2" }, [field("Peso (kg)", lineWeight), field(optionalLabel("Evidencia"), lineProofs)]),
         field("Notas del pesaje", lineNotes),
         h("div", { class: "row-wrap" }, [addLineBtn]),
         h("div", { class: "divider" }),

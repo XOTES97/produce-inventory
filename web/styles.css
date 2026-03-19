@@ -636,6 +636,14 @@ textarea { min-height: 84px; resize: vertical; }
   min-height: 60px;
 }
 
+.optional-mark {
+  display: inline-block;
+  font-size: 1.08em;
+  font-weight: 820;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
 .cash-diff-ok {
   color: var(--green2);
 }
