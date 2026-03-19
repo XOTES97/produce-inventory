@@ -15,12 +15,21 @@ begin
     'fondo_inicial',
     'reembolso_dia',
     'gasto_caja',
+    'retiro_boveda',
     'deposito_retiro_parcial',
     'vale_comprobante',
     'cheque',
     'transferencia_identificada',
     'otro_ajuste'
   );
+exception
+  when duplicate_object then null;
+end
+$$;
+
+do $$
+begin
+  alter type public.cash_adjustment_type add value if not exists 'retiro_boveda' after 'gasto_caja';
 exception
   when duplicate_object then null;
 end
@@ -535,6 +544,9 @@ begin
         v_affects_cash := true;
         v_signed_amount := -v_amount;
       when 'gasto_caja' then
+        v_affects_cash := true;
+        v_signed_amount := -v_amount;
+      when 'retiro_boveda' then
         v_affects_cash := true;
         v_signed_amount := -v_amount;
       when 'deposito_retiro_parcial' then

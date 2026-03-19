@@ -498,6 +498,19 @@ textarea { min-height: 84px; resize: vertical; }
   font-size: 13px;
 }
 
+.cash-adjustment-priority {
+  padding: 8px 10px;
+  border: 1px solid rgba(179, 41, 47, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 245, 245, 0.96), rgba(255, 255, 255, 0.98));
+}
+
+.cash-adjustment-priority-title {
+  font-size: 15px;
+  font-weight: 820;
+  letter-spacing: 0.15px;
+}
+
 .cash-denomination-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.04";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.04";
+import * as cfg from "./config.js?v=2026.03.19.05";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.05";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.04";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.05";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -78,6 +78,12 @@ const CASH_ADJUSTMENT_META = {
     fixedSign: "negative",
     defaultDirection: "salida",
   },
+  retiro_boveda: {
+    label: "Retiros a bóveda",
+    affectsCash: true,
+    fixedSign: "negative",
+    defaultDirection: "salida",
+  },
   deposito_retiro_parcial: {
     label: "Depositos / retiros parciales",
     affectsCash: true,
@@ -113,6 +119,7 @@ const CASH_ADJUSTMENT_ORDER = [
   "fondo_inicial",
   "reembolso_dia",
   "gasto_caja",
+  "retiro_boveda",
   "deposito_retiro_parcial",
   "vale_comprobante",
   "cheque",
@@ -5979,18 +5986,20 @@ async function pageCash(pageCtx) {
       adjustmentEffectEls[index] = effectValue;
 
       return h("div", { class: "cash-adjustment-grid" }, [
-        h("div", { class: "col", style: "gap: 4px" }, [
-          h("div", { style: "font-weight: 680", text: cashAdjustmentLabel(adjustmentType) }),
+        h("div", { class: `col${adjustmentType === "retiro_boveda" ? " cash-adjustment-priority" : ""}`, style: "gap: 4px" }, [
+          h("div", { class: adjustmentType === "retiro_boveda" ? "cash-adjustment-priority-title" : null, style: adjustmentType === "retiro_boveda" ? null : "font-weight: 680", text: cashAdjustmentLabel(adjustmentType) }),
           h("div", {
             class: "muted",
             text:
-              adjustmentType === "transferencia_identificada"
-                ? "Se registra para control, pero no aumenta el efectivo esperado."
-                : adjustmentType === "reembolso_dia"
-                  ? "Se toma automáticamente del POS y descuenta efectivo."
-                  : adjustmentType === "fondo_inicial"
-                    ? "Referencia informativa. No suma ni resta en la diferencia contra Versatil."
-                    : "El sistema aplica el signo según el concepto o dirección.",
+              adjustmentType === "retiro_boveda"
+                ? "Salida a bóveda. Se descuenta automáticamente del efectivo esperado."
+                : adjustmentType === "transferencia_identificada"
+                  ? "Se registra para control, pero no aumenta el efectivo esperado."
+                  : adjustmentType === "reembolso_dia"
+                    ? "Se toma automáticamente del POS y descuenta efectivo."
+                    : adjustmentType === "fondo_inicial"
+                      ? "Referencia informativa. No suma ni resta en la diferencia contra Versatil."
+                      : "El sistema aplica el signo según el concepto o dirección.",
           }),
         ]),
         amountInput,
