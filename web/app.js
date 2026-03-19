@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.12";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.12";
+import * as cfg from "./config.js?v=2026.03.19.13";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.13";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.12";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.13";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -269,6 +269,8 @@ let lastLaidOutRoute = "";
 let routeScrollResetPending = true;
 let captureDraftFlushFn = null;
 let cashDraftFlushFn = null;
+let captureDraftStatus = { state: "idle", restored: false };
+let cashDraftStatus = { state: "idle", restored: false };
 
 function flushPendingDraftSaves() {
   try {
@@ -2964,12 +2966,14 @@ function setBatchClosePresetState(value) {
       lines: draftLines.map((r) => r.get()),
     };
     storageSet(STORAGE_KEYS.captureDraft, JSON.stringify(buildCaptureDraft(payload)));
+    captureDraftStatus.state = "saved";
   }
 
   function queueDraftSave() {
     if (state.captureSubmitting || isProofPickerOpen) return;
     if (draftRestoreInProgress) return;
     if (draftSaveTimer) window.clearTimeout(draftSaveTimer);
+    captureDraftStatus.state = "saving";
     draftSaveTimer = window.setTimeout(() => {
       saveCaptureDraftNow();
     }, CAPTURE_DRAFT_AUTOSAVE_MS);
@@ -2977,6 +2981,8 @@ function setBatchClosePresetState(value) {
 
   function clearCaptureDraft() {
     storageRemove(STORAGE_KEYS.captureDraft);
+    captureDraftStatus.state = "idle";
+    captureDraftStatus.restored = false;
   }
 
   captureDraftFlushFn = () => {
@@ -3047,6 +3053,7 @@ function setBatchClosePresetState(value) {
       draftRestoreInProgress = false;
       queueDraftSave();
     }
+    captureDraftStatus.restored = true;
     return true;
   }
 
@@ -3678,12 +3685,39 @@ function setBatchClosePresetState(value) {
       ["Guardar movimiento"]
   );
 
+  const discardCaptureDraftBtn = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      type: "button",
+      onclick: () => {
+        clearCaptureDraft();
+        resetCaptureFormAfterSave();
+        msg.replaceChildren(notice("ok", "Borrador descartado."));
+      },
+    },
+    ["Descartar borrador"]
+  );
+
   const card = h("div", { class: "col" }, [
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: "Nuevo movimiento" }),
       h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
       !isActorManager ? notice("warn", "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
+      h("div", { class: "row-wrap cash-draft-bar" }, [
+        h("div", {
+          class: "muted cash-draft-status",
+          text:
+            captureDraftStatus.state === "saving"
+              ? "Borrador guardandose..."
+              : captureDraftStatus.restored
+                ? "Borrador restaurado y guardado localmente."
+                : "Borrador local activo.",
+        }),
+        h("div", { class: "spacer" }),
+        discardCaptureDraftBtn,
+      ]),
       msg,
       pills.el,
       mermaFlagsSection,
@@ -6150,11 +6184,13 @@ async function pageCash(pageCtx) {
       cashDraftSaveTimer = null;
     }
     storageSet(STORAGE_KEYS.cashDraft, JSON.stringify(buildCashDraft(state.cashDraft)));
+    cashDraftStatus.state = "saved";
   }
 
   function queueCashDraftSave() {
     if (state.cashSubmitting || cashDraftRestoreInProgress) return;
     if (cashDraftSaveTimer) window.clearTimeout(cashDraftSaveTimer);
+    cashDraftStatus.state = "saving";
     cashDraftSaveTimer = window.setTimeout(() => {
       saveCashDraftNow();
     }, CASH_DRAFT_AUTOSAVE_MS);
@@ -6162,6 +6198,8 @@ async function pageCash(pageCtx) {
 
   function clearCashDraftStorage() {
     storageRemove(STORAGE_KEYS.cashDraft);
+    cashDraftStatus.state = "idle";
+    cashDraftStatus.restored = false;
   }
 
   cashDraftFlushFn = () => {
@@ -7213,6 +7251,21 @@ async function pageCash(pageCtx) {
     ["Limpiar formulario"]
   );
 
+  const discardCashDraftBtn = h(
+    "button",
+    {
+      class: "btn btn-ghost",
+      type: "button",
+      onclick: () => {
+        clearCashDraftStorage();
+        resetCashDraft();
+        state.cashFlashNotice = null;
+        scheduleSafeRender();
+      },
+    },
+    ["Descartar borrador"]
+  );
+
   const formCard = h("div", { class: "card col no-print cash-form-card" }, [
     h("div", { class: "row-wrap" }, [
       h("div", { class: "h1", text: "Corte Z" }),
@@ -7228,6 +7281,19 @@ async function pageCash(pageCtx) {
       ),
     ]),
     h("div", { class: "muted cash-form-intro", text: employeeMode ? "Captura el cierre del día y envíalo una sola vez." : "Puedes capturar, revisar e imprimir cierres de caja desde aquí." }),
+    h("div", { class: "row-wrap cash-draft-bar" }, [
+      h("div", {
+        class: "muted cash-draft-status",
+        text:
+          cashDraftStatus.state === "saving"
+            ? "Borrador guardandose..."
+            : cashDraftStatus.restored
+              ? "Borrador restaurado y guardado localmente."
+              : "Borrador local activo.",
+      }),
+      h("div", { class: "spacer" }),
+      discardCashDraftBtn,
+    ]),
     formMsg,
     h("div", { class: "cash-priority-block" }, [
       h("div", { class: "cash-priority-copy" }, [

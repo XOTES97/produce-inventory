@@ -624,6 +624,18 @@ textarea { min-height: 84px; resize: vertical; }
   line-height: 1.35;
 }
 
+.cash-draft-bar {
+  padding: 10px 12px;
+  border: 1px solid rgba(23, 32, 47, 0.10);
+  border-radius: 14px;
+  background: rgba(248, 251, 255, 0.92);
+}
+
+.cash-draft-status {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .cash-pos-warning-wrap {
   margin: 6px 0 4px;
 }
