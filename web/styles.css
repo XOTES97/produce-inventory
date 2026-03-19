@@ -200,6 +200,19 @@ label {
   white-space: normal;
 }
 
+.merma-flags {
+  padding: 14px 16px;
+  border: 1px solid rgba(179, 122, 0, 0.2);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 249, 234, 0.92), rgba(255, 255, 255, 0.98));
+  gap: 8px;
+}
+
+.merma-flags-title {
+  font-size: 15px;
+  font-weight: 780;
+}
+
 input, select, textarea {
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }

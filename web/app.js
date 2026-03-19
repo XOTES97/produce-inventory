@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.03";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.03";
+import * as cfg from "./config.js?v=2026.03.19.04";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.04";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.03";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.04";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -249,6 +249,8 @@ function reconcileProofPickerState() {
 }
 
 let pageContextCounter = 0;
+let lastLaidOutRoute = "";
+let routeScrollResetPending = true;
 
 function isPageContextActive(pageCtx) {
   if (!pageCtx || typeof pageCtx.isActive !== "function") return true;
@@ -778,6 +780,7 @@ async function prepareProofFiles(rawFiles, { label = "evidencia", onProgress } =
 function navTo(r) {
   if (route() === String(r || "")) return;
   clearProofPickerOpen();
+  routeScrollResetPending = true;
   location.hash = `#/${r}`;
 }
 
@@ -1552,6 +1555,7 @@ async function loadMasterData() {
 }
 
 function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
+  const activeRoute = route();
   const app = h("div", { class: "app" });
 
   function blurActiveElement() {
@@ -1636,6 +1640,23 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
   }
 
   $root.replaceChildren(app);
+
+  const routeChanged = activeRoute !== lastLaidOutRoute;
+  lastLaidOutRoute = activeRoute;
+  if (routeScrollResetPending || routeChanged) {
+    routeScrollResetPending = false;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        try {
+          window.scrollTo(0, 0);
+          document.documentElement.scrollTop = 0;
+          document.body.scrollTop = 0;
+        } catch {
+          // ignore
+        }
+      });
+    });
+  }
 }
 
 function notice(kind, text) {
@@ -2378,6 +2399,14 @@ function setBatchClosePresetState(value) {
   const batchHint = h("div", { class: "muted" }, [
     "En modo agregado: se registra como un bloque y se marca con [AGREGADO] para rastrear que fue captura consolidada.",
   ]);
+  const mermaExhibition = h("input", { type: "checkbox" });
+  const mermaDegustation = h("input", { type: "checkbox" });
+  const mermaFlagsSection = h("div", { class: "merma-flags col" }, [
+    h("div", { class: "merma-flags-title", text: "Clasificación de merma" }),
+    h("div", { class: "muted", text: "Marca si esta merma corresponde a producto de exhibición o degustación." }),
+    h("label", { class: "checkrow" }, [mermaExhibition, h("span", { text: "Exhibición" })]),
+    h("label", { class: "checkrow" }, [mermaDegustation, h("span", { text: "Degustación" })]),
+  ]);
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
   const currency = h("input", { type: "text", value: DEFAULT_CURRENCY, placeholder: "Moneda (MXN)" });
   const reportedBy = h("select", {}, optionList(employees, { includeEmpty: true, emptyLabel: "(Opcional)..." }));
@@ -2554,6 +2583,8 @@ function setBatchClosePresetState(value) {
         aggregateMode: !!aggregateMode.checked,
         aggregateCloseTime: normalizeDraftValue(aggregateCloseTime.value),
         notes: normalizeDraftValue(notes.value),
+        mermaExhibition: !!mermaExhibition.checked,
+        mermaDegustation: !!mermaDegustation.checked,
         currency: normalizeDraftValue(currency.value, DEFAULT_CURRENCY) || DEFAULT_CURRENCY,
         fromQuality: normalizeDraftValue(fromQuality.value),
         toQuality: normalizeDraftValue(toQuality.value),
@@ -2594,6 +2625,8 @@ function setBatchClosePresetState(value) {
       aggregateMode.checked = isActorManager && !!draft.aggregateMode;
       aggregateCloseTime.value = normalizeDraftValue(draft.aggregateCloseTime, aggregateCloseTime.value);
       notes.value = String(draft.notes || "");
+      mermaExhibition.checked = !!draft.mermaExhibition;
+      mermaDegustation.checked = !!draft.mermaDegustation;
       currency.value = String(draft.currency || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY;
       fromQuality.value = normalizeDraftValue(draft.fromQuality, "");
       toQuality.value = normalizeDraftValue(draft.toQuality, "");
@@ -2722,6 +2755,7 @@ function setBatchClosePresetState(value) {
     traspasoSection.style.display = mt === "traspaso_calidad" ? "" : "none";
     traspasoSkuSection.style.display = mt === "traspaso_sku" ? "" : "none";
     ajusteSection.style.display = mt === "ajuste" ? "" : "none";
+    mermaFlagsSection.style.display = mt === "merma" ? "" : "none";
     currencySection.style.display = mt === "venta" ? "" : "none";
     refreshTraspasoSkuOptions();
     applyTraspasoSkuBucket();
@@ -2750,6 +2784,7 @@ function setBatchClosePresetState(value) {
   traspasoSection.style.display = "none";
   traspasoSkuSection.style.display = "none";
   ajusteSection.style.display = "none";
+  mermaFlagsSection.style.display = currentMode === "merma" ? "" : "none";
 
   refreshTraspasoSkuOptions();
   fromSku.addEventListener("change", () => {
@@ -2837,6 +2872,8 @@ function setBatchClosePresetState(value) {
   function resetCaptureFormAfterSave() {
     clearCaptureDraft();
     notes.value = "";
+    mermaExhibition.checked = false;
+    mermaDegustation.checked = false;
     if (proofs) proofs.value = "";
     clearEmployeeCaptureProofs();
     renderEmployeeProofs();
@@ -2904,7 +2941,15 @@ function setBatchClosePresetState(value) {
           msg.appendChild(notice("error", "Confirma que este registro no se hizo dentro de una toma física de inventario activa."));
           return;
         }
-        const noteBase = String(notes.value || "").trim();
+        let noteBase = String(notes.value || "").trim();
+        if (submitMode === "merma") {
+          const mermaTags = [];
+          if (mermaExhibition.checked) mermaTags.push("Exhibición");
+          if (mermaDegustation.checked) mermaTags.push("Degustación");
+          if (mermaTags.length) {
+            noteBase = [`[MERMA: ${mermaTags.join(" | ")}]`, noteBase].filter(Boolean).join(" ");
+          }
+        }
         const closeTime = isAggregateMode ? String(aggregateCloseTime.value || batchCloseDefaultTime(dtInputValue)) : "";
         const isMarked = noteBase.toUpperCase().includes("[AGREGADO]");
         const aggregateSuffix = isAggregateMode && !isMarked ? ` [AGREGADO] registrado al cierre ${closeTime}` : "";
@@ -3258,6 +3303,7 @@ function setBatchClosePresetState(value) {
       !isActorManager ? notice("warn", "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
       msg,
       pills.el,
+      mermaFlagsSection,
       h("div", { class: "divider" }),
       h("div", { class: "grid2" }, [
         h("div", { class: "col" }, [
@@ -8043,7 +8089,18 @@ async function boot() {
     cleanupStuckBackdrops();
   };
 
-  window.addEventListener("hashchange", () => scheduleSafeRender());
+  if ("scrollRestoration" in history) {
+    try {
+      history.scrollRestoration = "manual";
+    } catch {
+      // ignore
+    }
+  }
+
+  window.addEventListener("hashchange", () => {
+    routeScrollResetPending = true;
+    scheduleSafeRender();
+  });
   window.addEventListener("online", () => scheduleSafeRender());
   window.addEventListener("focus", () => {
     recoverMobileUiState();
