@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.06";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.06";
+import * as cfg from "./config.js?v=2026.03.19.07";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.07";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.06";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.07";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -5871,13 +5871,23 @@ async function pageCash(pageCtx) {
       const effectEl = adjustmentEffectEls[index];
       if (amountEl) {
         if (row.is_amount_read_only) {
-          amountEl.value = row.amount ? row.amount.toFixed(2) : "";
+          amountEl.textContent = fmtMoney(row.amount || 0);
+        } else if ("value" in amountEl) {
+          amountEl.readOnly = false;
         }
-        amountEl.readOnly = row.is_amount_read_only;
       }
       if (directionEl) {
-        directionEl.disabled = row.fixed_sign !== "direction";
-        directionEl.value = row.direction || "entrada";
+        if ("value" in directionEl) {
+          directionEl.disabled = false;
+          directionEl.value = row.direction || "entrada";
+        } else {
+          directionEl.textContent =
+            row.fixed_sign === "negative"
+              ? "Salida fija"
+              : row.fixed_sign === "positive"
+                ? "Entrada fija"
+                : "Dirección fija";
+        }
       }
       if (effectEl) {
         effectEl.textContent = cashAdjustmentEffectText(row);
@@ -6175,33 +6185,57 @@ async function pageCash(pageCtx) {
     const rows = CASH_ADJUSTMENT_ORDER.map((adjustmentType, index) => {
       const row = draft.adjustment_lines[index];
       const meta = CASH_ADJUSTMENT_META[adjustmentType];
-      const amountInput = createInput("number", row.amount, {
-        min: "0",
-        step: "0.01",
-        inputmode: "decimal",
-        placeholder: meta?.syncFromRefunds ? "Se toma del POS" : "0.00",
-      });
-      const directionInput = createSelect(
-        [
-          { value: "entrada", label: "Entrada" },
-          { value: "salida", label: "Salida" },
-        ],
-        row.direction || meta?.defaultDirection || "entrada"
-      );
+      const isAmountReadOnly = !!meta?.syncFromRefunds || !!meta?.syncFromVaultWithdrawals;
+      const fixedSign = meta?.fixedSign || "direction";
+      const amountInput = isAmountReadOnly
+        ? h("div", { class: "mono cash-static-value", text: fmtMoney(row.amount || 0) })
+        : createInput("number", row.amount, {
+            min: "0",
+            step: "0.01",
+            inputmode: "decimal",
+            placeholder: "0.00",
+          });
+      const amountCell = isAmountReadOnly
+        ? h("div", { class: "cash-inline-box cash-static-box" }, [amountInput])
+        : amountInput;
+      const directionInput = fixedSign === "direction"
+        ? createSelect(
+            [
+              { value: "entrada", label: "Entrada" },
+              { value: "salida", label: "Salida" },
+            ],
+            row.direction || meta?.defaultDirection || "entrada"
+          )
+        : h("div", {
+            class: "mono cash-static-value",
+            text:
+              fixedSign === "negative"
+                ? "Salida fija"
+                : fixedSign === "positive"
+                  ? "Entrada fija"
+                  : "Dirección fija",
+          });
+      const directionCell = fixedSign === "direction"
+        ? directionInput
+        : h("div", { class: "cash-inline-box cash-static-box" }, [directionInput]);
       const supportInput = createInput("text", row.support_reference, { placeholder: "Soporte / referencia" });
       const noteInput = createInput("text", row.note, { placeholder: "Observacion" });
       const effectValue = h("div", { class: "mono muted", text: meta?.affectsCash ? fmtMoney(0) : "No entra a efectivo" });
 
-      amountInput.addEventListener("input", () => {
-        clearCashFlash();
-        row.amount = amountInput.value;
-        refreshComputed();
-      });
-      directionInput.addEventListener("change", () => {
-        clearCashFlash();
-        row.direction = directionInput.value;
-        refreshComputed();
-      });
+      if (!isAmountReadOnly) {
+        amountInput.addEventListener("input", () => {
+          clearCashFlash();
+          row.amount = amountInput.value;
+          refreshComputed();
+        });
+      }
+      if (fixedSign === "direction") {
+        directionInput.addEventListener("change", () => {
+          clearCashFlash();
+          row.direction = directionInput.value;
+          refreshComputed();
+        });
+      }
       supportInput.addEventListener("input", () => {
         clearCashFlash();
         row.support_reference = supportInput.value;
@@ -6232,8 +6266,8 @@ async function pageCash(pageCtx) {
                       : "El sistema aplica el signo según el concepto o dirección.",
           }),
         ]),
-        amountInput,
-        directionInput,
+        amountCell,
+        directionCell,
         supportInput,
         noteInput,
         h("div", { class: "cash-inline-box" }, [effectValue]),
@@ -6849,7 +6883,7 @@ async function pageCash(pageCtx) {
     h("div", { class: "grid3" }, [cashField("Venta neta de contado", netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dolar (USD)", salesUsdInput)]),
     h("div", { class: "grid3" }, [cashField("Tipo de cambio", exchangeRateInput), cashField("Ventas dolar en MXN", salesUsdMxnInput), cashField("IVA 0%", ivaZeroInput)]),
     h("div", { class: "divider" }),
-    h("div", { class: "h1", text: "Desglose de venta por producto" }),
+    h("div", { class: "row-wrap" }, [h("div", { class: "h1", text: "Desglose de venta por producto" }), h("span", { class: "optional-mark", text: "(Opcional)" })]),
     productRowsWrap,
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Arqueo fisico" }),

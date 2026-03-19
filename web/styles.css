@@ -529,6 +529,14 @@ textarea { min-height: 84px; resize: vertical; }
   background: linear-gradient(180deg, rgba(240, 250, 244, 0.96), rgba(255, 255, 255, 0.98));
 }
 
+.cash-static-box {
+  background: rgba(245, 247, 251, 0.96);
+}
+
+.cash-static-value {
+  font-size: 13px;
+}
+
 .cash-denomination-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
