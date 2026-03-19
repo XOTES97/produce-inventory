@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.07";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.07";
+import * as cfg from "./config.js?v=2026.03.19.08";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.08";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.07";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.08";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -6889,11 +6889,11 @@ async function pageCash(pageCtx) {
     h("div", { class: "h1", text: "Arqueo fisico" }),
     denominationWrap,
     h("div", { class: "divider" }),
-    h("div", { class: "h1", text: "Controles adicionales del cajero" }),
-    adjustmentsWrap,
-    h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Retiros a bóveda" }),
     vaultWithdrawalsWrap,
+    h("div", { class: "divider" }),
+    h("div", { class: "h1", text: "Controles adicionales del cajero" }),
+    adjustmentsWrap,
     h("div", { class: "divider" }),
     h("div", { class: "h1", text: "Conciliacion automatica" }),
     summaryWrap,
