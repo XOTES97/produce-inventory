@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.06";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.06";
+import * as cfg from "./config.js?v=2026.03.20.08";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.08";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.06";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.08";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -22,9 +22,9 @@ const ROUTE_TITLES = {
 };
 
 const NAV_ITEMS = [
-  { route: "entries", label: "Entradas", employeeLabel: "In", icon: "IN", role: "employee" },
+  { route: "entries", label: "Entradas", employeeLabel: "Entradas", icon: "IN", role: "employee" },
   { route: "capture", label: "Capturar", employeeLabel: "Log", icon: "+" },
-  { route: "cash", label: "Caja", icon: "$" },
+  { route: "cash", label: "Caja", employeeLabel: "Corte", icon: "$" },
   { route: "movements", label: "Movimientos", icon: "LOG" },
   { route: "inventory", label: "Inventario", icon: "KG" },
   { route: "hypothetical", label: "Hipotetico", icon: "SIM" },
