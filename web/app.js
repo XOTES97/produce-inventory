@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.01";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.01";
+import * as cfg from "./config.js?v=2026.03.20.02";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.02";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.01";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.02";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -3402,7 +3402,7 @@ function setBatchClosePresetState(value) {
 
   addLine();
 
-  const addLineBtn = h("button", { class: "btn", type: "button", onclick: addLine }, ["Agregar linea"]);
+  addLineBtn = h("button", { class: "btn", type: "button", onclick: addLine }, ["Agregar linea"]);
 
   const traspasoSection = h("div", { class: "grid2" }, [
     field("De calidad", fromQuality),
