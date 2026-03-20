@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.15";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.15";
+import * as cfg from "./config.js?v=2026.03.19.16";
+import { supabase } from "./supabaseClient.js?v=2026.03.19.16";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.15";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.19.16";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -11,6 +11,7 @@ const $root = document.getElementById("root");
 const ROUTE_TITLES = {
   login: "Iniciar sesion",
   capture: "Capturar",
+  entries: "Entradas",
   movements: "Movimientos",
   inventory: "Inventario",
   hypothetical: "Hipotetico",
@@ -21,6 +22,7 @@ const ROUTE_TITLES = {
 };
 
 const NAV_ITEMS = [
+  { route: "entries", label: "Entradas", icon: "IN", role: "employee" },
   { route: "capture", label: "Capturar", icon: "+" },
   { route: "cash", label: "Caja", icon: "$" },
   { route: "movements", label: "Movimientos", icon: "LOG" },
@@ -132,7 +134,7 @@ const CASH_ADJUSTMENT_ORDER = [
 ];
 
 const ROUTE_ACCESS = {
-  employee: new Set(["capture", "cash"]),
+  employee: new Set(["capture", "entries", "cash"]),
   manager: null,
 };
 
@@ -152,7 +154,7 @@ const MOVEMENT_TYPES_BY_ROLE = {
 };
 const ROUTE_BY_ROLE = {
   manager: null,
-  employee: new Set(["capture", "cash"]),
+  employee: new Set(["capture", "entries", "cash"]),
   none: new Set(),
 };
 
@@ -163,6 +165,7 @@ const state = {
   employees: [],
   skus: [],
   captureEmployeeProofs: [],
+  captureEmployeeEntrySheetProofs: [],
   masterLoaded: false,
   actor: {
     workspace_id: null,
@@ -328,6 +331,12 @@ function currentRouteAllowed(routeName) {
   return currentActorCanAccessRoute(routeName);
 }
 
+function navItemVisible(item) {
+  const requiredRole = String(item?.role || "any").trim().toLowerCase();
+  if (!requiredRole || requiredRole === "any") return true;
+  return actorRole() === requiredRole;
+}
+
 function movementTypesForActor() {
   return MOVEMENT_TYPES_BY_ROLE[actorRole()] || MOVEMENT_TYPES_BY_ROLE.manager;
 }
@@ -352,9 +361,11 @@ function normalizeActorRoleError(message) {
 
   switch (code) {
     case "employee_only_limited_types":
-      return "Este usuario solo puede capturar venta, merma o traspaso entre SKUs.";
+      return "Este usuario solo puede capturar entrada, venta, merma o traspaso entre SKUs.";
     case "proof_required_for_employee":
       return "Los empleados deben adjuntar al menos una evidencia para registrar el movimiento.";
+    case "entry_sheet_proof_required_for_employee":
+      return "Como empleado, debes adjuntar una foto adicional de la hoja de entrada.";
     case "employee_not_linked":
       return "Este usuario empleado no está ligado a un empleado activo.";
     case "employee_must_match_linked_employee":
@@ -363,6 +374,8 @@ function normalizeActorRoleError(message) {
       return "No tienes permiso para este traspaso entre SKUs.";
     case "employee_sale_requires_sku":
       return "Las ventas de empleado requieren un SKU por línea.";
+    case "employee_entry_requires_sku":
+      return "Las entradas de empleado requieren elegir un SKU por línea.";
     case "employee_merma_requires_sku":
       return "La merma de empleado requiere elegir un SKU por línea.";
     case "employee_sale_only_per_box_skus":
@@ -545,7 +558,11 @@ function clearEmployeeCaptureProofs({ clearStored = false } = {}) {
   for (const item of state.captureEmployeeProofs || []) {
     revokeObjectUrl(item?.preview_url);
   }
+  for (const item of state.captureEmployeeEntrySheetProofs || []) {
+    revokeObjectUrl(item?.preview_url);
+  }
   state.captureEmployeeProofs = [];
+  state.captureEmployeeEntrySheetProofs = [];
   if (clearStored) {
     void localDraftStoreDelete(CAPTURE_EMPLOYEE_PROOFS_DRAFT_KEY);
   }
@@ -1900,7 +1917,7 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
   app.appendChild(content);
 
   if (showNav && state.session) {
-    const navItems = NAV_ITEMS.filter((it) => currentRouteAllowed(it.route));
+    const navItems = NAV_ITEMS.filter((it) => currentRouteAllowed(it.route) && navItemVisible(it));
     const r = route();
       const nav = h("div", { class: "bottomnav" }, [
         h(
@@ -2291,6 +2308,14 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   const productSel = h("select", {}, optionList(products, { includeEmpty: true, emptyLabel: "Producto..." }));
   const qualitySel = h("select", {}, optionList(qualities, { includeEmpty: true, emptyLabel: "Calidad..." }));
   const weight = h("input", { type: "number", step: "0.001", min: "0", placeholder: "kg" });
+  const grossWeight = h("input", { type: "number", step: "0.001", min: "0", placeholder: "peso bruto kg" });
+  const tarePreset = h("select", {}, [
+    h("option", { value: "manual", text: "Manual" }),
+    h("option", { value: "tarima_promedio", text: "Tarima promedio" }),
+    h("option", { value: "tarima_bin", text: "Tarima y bin" }),
+    h("option", { value: "tarima_bin_doble", text: "Tarima y bin doble" }),
+  ]);
+  const tareWeight = h("input", { type: "number", step: "0.001", min: "0", placeholder: "tara kg" });
 
   const boxes = h("input", { type: "number", step: "1", min: "0", placeholder: "cajas" });
   const priceModel = h("select", {}, [
@@ -2305,10 +2330,20 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   const productField = h("div", { style: "flex: 1; min-width: 200px" }, [field("Producto", productSel)]);
   const qualityField = h("div", { style: "flex: 1; min-width: 180px" }, [field("Calidad", qualitySel)]);
   const weightField = h("div", { style: "flex: 1; min-width: 140px" }, [field("Peso (kg)", weight)]);
-  const priceModelField = field("Modelo", priceModel);
+  const grossWeightField = field("Peso Bruto (kg)", grossWeight);
+  const tarePresetField = field("Tipo de tara", tarePreset);
+  const tareWeightField = field("Tara a restar (kg)", tareWeight);
   const boxesField = field("Cajas (opcional)", boxes);
+  const priceModelField = field("Modelo", priceModel);
   const unitPriceField = field("Precio unitario", unitPrice);
-  const saleGrid = h("div", { class: "grid3" }, [priceModelField, boxesField, unitPriceField]);
+  const saleBoxesSlot = h("div");
+  const entryBoxesSlot = h("div");
+  const saleGrid = h("div", { class: "grid3" }, [priceModelField, saleBoxesSlot, unitPriceField]);
+  const entryTareGrid = h("div", { class: "grid3" }, [grossWeightField, tarePresetField, tareWeightField]);
+  const entryHint = h("div", { class: "notice" }, [
+    h("div", { class: "muted", text: "Si capturas peso bruto y tara, el peso neto se calcula automáticamente. Si dejas peso bruto vacío, puedes capturar solo el peso neto." }),
+  ]);
+  const entryBoxesRow = h("div", { class: "grid2" }, [entryBoxesSlot, entryHint]);
   const totalRow = h("div", { class: "row" }, [h("div", { class: "spacer" }), total]);
 
   function allowedSkusForMode(nextMode = currentMode) {
@@ -2317,6 +2352,12 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       if (Array.isArray(provided)) return provided;
     }
     return allSkus;
+  }
+
+  function formatWeightInput(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "";
+    return num.toFixed(3).replace(/\.000$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
   }
 
   function refreshSkuOptions(nextMode = currentMode, preserveValue = true) {
@@ -2336,6 +2377,13 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     return allSkus.find((x) => String(x.id) === value) || null;
   }
 
+  function mountBoxesField(target, labelText) {
+    saleBoxesSlot.replaceChildren();
+    entryBoxesSlot.replaceChildren();
+    boxesField.querySelector("label")?.replaceChildren(document.createTextNode(labelText));
+    target?.replaceChildren(boxesField);
+  }
+
   function syncSkuDerivedFields() {
     const s = findSku(skuSel.value);
     if (s) {
@@ -2352,16 +2400,52 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     }
   }
 
+  function syncEntryNetWeight() {
+    if (currentMode !== "entrada") {
+      weight.readOnly = false;
+      return;
+    }
+    weightField.querySelector("label")?.replaceChildren(document.createTextNode("Peso Neto en KG"));
+    const grossRaw = String(grossWeight.value || "").trim();
+    const grossValue = Number(grossWeight.value);
+    const tareValue = Number(tareWeight.value);
+    if (grossRaw && Number.isFinite(grossValue) && grossValue >= 0) {
+      const next = Math.max(0, grossValue - (Number.isFinite(tareValue) && tareValue > 0 ? tareValue : 0));
+      weight.value = formatWeightInput(next);
+      weight.readOnly = true;
+      return;
+    }
+    weight.readOnly = false;
+  }
+
+  function updateEntryTarePresentation() {
+    const selected = String(tarePreset.value || "manual");
+    if (selected === "manual") {
+      tareWeight.placeholder = "tara kg";
+    } else if (selected === "tarima_promedio") {
+      tareWeight.placeholder = "tara kg (tarima promedio)";
+    } else if (selected === "tarima_bin") {
+      tareWeight.placeholder = "tara kg (tarima y bin)";
+    } else {
+      tareWeight.placeholder = "tara kg (tarima y bin doble)";
+    }
+    syncEntryNetWeight();
+  }
+
   skuSel.addEventListener("change", () => {
     syncSkuDerivedFields();
     if (currentMode === "venta") {
       setVisibilityForMode(currentMode);
       return;
     }
+    if (currentMode === "entrada") syncEntryNetWeight();
     recalc();
   });
 
   function recalc() {
+    if (currentMode === "entrada") {
+      syncEntryNetWeight();
+    }
     if (currentMode !== "venta") {
       total.textContent = "";
       return;
@@ -2386,6 +2470,9 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   }
 
   weight.addEventListener("input", recalc);
+  grossWeight.addEventListener("input", syncEntryNetWeight);
+  tarePreset.addEventListener("change", updateEntryTarePresentation);
+  tareWeight.addEventListener("input", syncEntryNetWeight);
   boxes.addEventListener("input", recalc);
   priceModel.addEventListener("change", recalc);
   unitPrice.addEventListener("input", recalc);
@@ -2408,6 +2495,8 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       qualityField,
       weightField,
     ]),
+    entryTareGrid,
+    entryBoxesRow,
     saleGrid,
     totalRow,
     h("div", { class: "row-wrap" }, [h("div", { class: "spacer" }), removeBtn]),
@@ -2419,6 +2508,9 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       product_id: String(productSel.value || ""),
       quality_id: String(qualitySel.value || ""),
       weight_kg: String(weight.value || ""),
+      gross_weight_kg: String(grossWeight.value || ""),
+      tare_preset: String(tarePreset.value || "manual"),
+      tare_weight_kg: String(tareWeight.value || ""),
       boxes: String(boxes.value || ""),
       price_model: String(priceModel.value || ""),
       unit_price: String(unitPrice.value || ""),
@@ -2432,21 +2524,26 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     productSel.value = String(values.product_id || "");
     qualitySel.value = String(values.quality_id || "");
     weight.value = String(values.weight_kg != null ? values.weight_kg : "");
+    grossWeight.value = String(values.gross_weight_kg != null ? values.gross_weight_kg : "");
+    tarePreset.value = String(values.tare_preset || "manual");
+    tareWeight.value = String(values.tare_weight_kg != null ? values.tare_weight_kg : "");
     boxes.value = String(values.boxes != null ? values.boxes : "");
     priceModel.value = String(values.price_model || "");
     unitPrice.value = String(values.unit_price != null ? values.unit_price : "");
     syncSkuDerivedFields();
+    updateEntryTarePresentation();
     recalc();
   }
 
   function setVisibilityForMode(nextMode) {
     currentMode = nextMode;
     refreshSkuOptions(nextMode);
-    row.querySelectorAll(".grid3").forEach((el) => (el.style.display = nextMode === "venta" ? "" : "none"));
+    saleGrid.style.display = nextMode === "venta" ? "" : "none";
+    entryTareGrid.style.display = nextMode === "entrada" ? "" : "none";
+    entryBoxesRow.style.display = nextMode === "entrada" ? "" : "none";
     totalRow.style.display = nextMode === "venta" ? "" : "none";
     const employeeSkuDrivenMode = employeeCapture && nextMode !== "traspaso_calidad" && nextMode !== "traspaso_sku";
 
-    // Hide quality selector for traspasos (direction comes from movement-level fields).
     if (nextMode === "traspaso_calidad") {
       skuSel.value = "";
       skuField.style.display = "none";
@@ -2456,7 +2553,6 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       productSel.disabled = false;
       qualitySel.disabled = false;
     } else if (nextMode === "traspaso_sku") {
-      // Direction comes from movement-level from/to SKU.
       skuSel.value = "";
       skuField.style.display = "none";
       productField.style.display = "none";
@@ -2476,36 +2572,57 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       productSel.disabled = false;
       qualitySel.disabled = false;
     }
-    if (nextMode !== "venta") {
+
+    if (nextMode === "entrada") {
+      mountBoxesField(entryBoxesSlot, "Numero de cajas (opcional)");
       priceModel.value = "";
-      boxes.value = "";
       unitPrice.value = "";
       total.textContent = "";
       priceModel.disabled = false;
       priceModelField.style.display = "";
-      boxesField.style.display = "";
-    } else {
+      unitPriceField.style.display = "";
+    } else if (nextMode === "venta") {
       const s = findSku(skuSel.value);
       const employeeSaleModel = String(s?.default_price_model || "") === "per_box" ? "per_box" : "per_kg";
       if (employeeCapture) {
         priceModel.value = employeeSaleModel;
         priceModel.disabled = true;
         priceModelField.style.display = "none";
-        boxesField.style.display = employeeSaleModel === "per_box" ? "" : "none";
-        boxesField.querySelector("label")?.replaceChildren(document.createTextNode("Cajas"));
+        if (employeeSaleModel === "per_box") {
+          mountBoxesField(saleBoxesSlot, "Cajas");
+        } else {
+          saleBoxesSlot.replaceChildren();
+          entryBoxesSlot.replaceChildren();
+          boxes.value = "";
+        }
       } else {
         priceModel.disabled = false;
         priceModelField.style.display = "";
-        boxesField.style.display = "";
-        boxesField.querySelector("label")?.replaceChildren(document.createTextNode("Cajas (opcional)"));
+        mountBoxesField(saleBoxesSlot, "Cajas (opcional)");
       }
       if (s && s.default_price_model && !priceModel.value) {
         priceModel.value = String(s.default_price_model);
       }
       recalc();
+    } else {
+      saleBoxesSlot.replaceChildren();
+      entryBoxesSlot.replaceChildren();
+      boxes.value = "";
+      priceModel.value = "";
+      unitPrice.value = "";
+      total.textContent = "";
+      priceModel.disabled = false;
+      priceModelField.style.display = "";
+      unitPriceField.style.display = "";
+      weightField.querySelector("label")?.replaceChildren(document.createTextNode("Peso (kg)"));
+      weight.readOnly = false;
+      grossWeight.value = "";
+      tarePreset.value = "manual";
+      tareWeight.value = "";
     }
     syncSkuDerivedFields();
-    if (nextMode !== "traspaso_calidad" && !qualitySel.value && qualities.length === 1) {
+    updateEntryTarePresentation();
+    if (nextMode !== "traspaso_calidad" && nextMode !== "entrada" && !qualitySel.value && qualities.length === 1) {
       qualitySel.value = qualities[0].id;
     }
   }
@@ -2560,8 +2677,12 @@ function buildMovementLinePreviewItems(lines, movementType, currency, maxLines =
   return h("div", { class: "movement-lines-preview col" }, nodes);
 }
 
-async function pageCapture(pageCtx) {
+async function pageCapture(pageCtx, options = {}) {
   const isActive = () => isPageContextActive(pageCtx);
+  const forcedMovementType = MOVEMENT_TYPES[String(options?.forcedMovementType || "").trim()]
+    ? String(options.forcedMovementType).trim()
+    : null;
+  const pageTitle = String(options?.pageTitle || (forcedMovementType === "entrada" ? ROUTE_TITLES.entries : ROUTE_TITLES.capture));
   const OCCURRED_AT_AUTO_SYNC_MS = 15000;
   const products = state.products.filter((p) => p.is_active);
   const qualities = state.qualities.filter((q) => q.is_active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -2588,7 +2709,7 @@ async function pageCapture(pageCtx) {
         ),
       ]),
     ]);
-    layout(ROUTE_TITLES.capture, card);
+    layout(pageTitle, card);
     return;
   }
 
@@ -2596,6 +2717,7 @@ async function pageCapture(pageCtx) {
   const actorRequiresEmployee = hasProofRequirement();
   const autoEmpId = actorEmployeeId();
   const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
+  const entryOnlyCaptureForEmployee = !isActorManager && forcedMovementType === "entrada";
   if (!isActorManager) {
     storageRemove(STORAGE_KEYS.captureFixedDatetimeLock);
     storageRemove(STORAGE_KEYS.captureFixedDatetimeValue);
@@ -2657,7 +2779,8 @@ async function pageCapture(pageCtx) {
 
   const employeeCanUseTraspasoSku =
     isActorManager || state.actor?.allow_all_traspaso_sku !== false || employeeToSkuByFrom.size > 0;
-  const availableMovementTypes = movementTypesForActor().filter((mt) => {
+  const baseMovementTypes = forcedMovementType ? [forcedMovementType] : movementTypesForActor();
+  const availableMovementTypes = baseMovementTypes.filter((mt) => {
     if (!isActorManager && mt === "venta" && employeeSaleSkuIds.size === 0) return false;
     if (!isActorManager && mt === "traspaso_sku" && !employeeCanUseTraspasoSku) return false;
     return true;
@@ -2836,15 +2959,25 @@ function setBatchClosePresetState(value) {
   const employeeProofMsg = h("div");
   const employeeProofsWrap = h("div", { class: "col" });
   const employeeProofActions = h("div", { class: "row-wrap" });
+  const employeeEntrySheetProofMsg = h("div");
+  const employeeEntrySheetProofsWrap = h("div", { class: "col" });
+  const employeeEntrySheetProofActions = h("div", { class: "row-wrap" });
 
-  function renderEmployeeProofs() {
-    employeeProofsWrap.replaceChildren();
-    const items = state.captureEmployeeProofs || [];
+  function clearEmployeeProofList(stateKey) {
+    for (const item of state[stateKey] || []) {
+      revokeObjectUrl(item?.preview_url);
+    }
+    state[stateKey] = [];
+  }
+
+  function renderEmployeeProofCollection(stateKey, wrapEl, emptyText) {
+    wrapEl.replaceChildren();
+    const items = state[stateKey] || [];
     if (items.length === 0) {
-      employeeProofsWrap.appendChild(notice("warn", "Todavía no hay foto de evidencia."));
+      wrapEl.appendChild(notice("warn", emptyText));
       return;
     }
-    employeeProofsWrap.appendChild(
+    wrapEl.appendChild(
       h(
         "div",
         { class: "thumbgrid" },
@@ -2862,10 +2995,12 @@ function setBatchClosePresetState(value) {
                 class: "btn btn-ghost",
                 type: "button",
                 onclick: () => {
-                  const removed = state.captureEmployeeProofs.splice(index, 1)[0];
+                  const removed = state[stateKey].splice(index, 1)[0];
                   revokeObjectUrl(removed?.preview_url);
-                  void persistEmployeeCaptureProofs();
-                  renderEmployeeProofs();
+                  if (stateKey === "captureEmployeeProofs") {
+                    void persistEmployeeCaptureProofs();
+                  }
+                  renderEmployeeProofCollection(stateKey, wrapEl, emptyText);
                 },
               },
               ["Quitar"]
@@ -2876,19 +3011,50 @@ function setBatchClosePresetState(value) {
     );
   }
 
-  async function captureEmployeeProof() {
-    employeeProofMsg.replaceChildren();
+  function renderEmployeeProofs() {
+    renderEmployeeProofCollection("captureEmployeeProofs", employeeProofsWrap, "Todavía no hay foto de evidencia.");
+  }
+
+  function renderEmployeeEntrySheetProofs() {
+    renderEmployeeProofCollection("captureEmployeeEntrySheetProofs", employeeEntrySheetProofsWrap, "Todavía no hay foto de la hoja de entrada.");
+  }
+
+  async function captureEmployeeProofTo(stateKey, messageEl, title, { replaceExisting = false } = {}) {
+    messageEl.replaceChildren();
     try {
-      const captured = await openEmployeeCameraCaptureModal({ employeeName: actorDisplayName });
+      const captured = await openEmployeeCameraCaptureModal({ employeeName: actorDisplayName, title });
       if (!captured) return;
-      state.captureEmployeeProofs.push(captured);
-      await persistEmployeeCaptureProofs();
-      renderEmployeeProofs();
+      if (replaceExisting) clearEmployeeProofList(stateKey);
+      if (!Array.isArray(state[stateKey])) state[stateKey] = [];
+      state[stateKey].push(captured);
+      if (stateKey === "captureEmployeeProofs") {
+        await persistEmployeeCaptureProofs();
+        renderEmployeeProofs();
+      } else {
+        renderEmployeeEntrySheetProofs();
+      }
     } catch (error) {
-      employeeProofMsg.replaceChildren(
+      messageEl.replaceChildren(
         notice("error", error?.message ? String(error.message) : "No se pudo tomar la foto.")
       );
     }
+  }
+
+  async function captureEmployeeProof() {
+    await captureEmployeeProofTo(
+      "captureEmployeeProofs",
+      employeeProofMsg,
+      entryOnlyCaptureForEmployee ? "Tomar evidencia del movimiento" : "Tomar evidencia"
+    );
+  }
+
+  async function captureEmployeeEntrySheetProof() {
+    await captureEmployeeProofTo(
+      "captureEmployeeEntrySheetProofs",
+      employeeEntrySheetProofMsg,
+      "Tomar foto de hoja de entrada",
+      { replaceExisting: true }
+    );
   }
 
   if (isActorManager) {
@@ -2924,7 +3090,8 @@ function setBatchClosePresetState(value) {
           class: "btn btn-ghost",
           type: "button",
           onclick: () => {
-            clearEmployeeCaptureProofs({ clearStored: true });
+            clearEmployeeProofList("captureEmployeeProofs");
+            void persistEmployeeCaptureProofs();
             renderEmployeeProofs();
           },
         },
@@ -2932,24 +3099,47 @@ function setBatchClosePresetState(value) {
       )
     );
     renderEmployeeProofs();
+
+    if (entryOnlyCaptureForEmployee) {
+      employeeEntrySheetProofActions.append(
+        h("button", { class: "btn btn-primary", type: "button", onclick: captureEmployeeEntrySheetProof }, ["Tomar foto de hoja"]),
+        h(
+          "button",
+          {
+            class: "btn btn-ghost",
+            type: "button",
+            onclick: () => {
+              clearEmployeeProofList("captureEmployeeEntrySheetProofs");
+              renderEmployeeEntrySheetProofs();
+            },
+          },
+          ["Quitar foto"]
+        )
+      );
+      renderEmployeeEntrySheetProofs();
+    }
   }
 
   const proofsHint = h("div", { class: "muted" }, [
     actorRequiresEmployee
-      ? "Evidencia obligatoria (empleado): solo se permite tomar la foto desde la cámara de la app."
+      ? entryOnlyCaptureForEmployee
+        ? "Entrada de empleado: se requiere una sola foto de la hoja de entrada para todo el registro."
+        : "Evidencia obligatoria (empleado): solo se permite tomar la foto desde la cámara de la app."
       : "Evidencia (opcional): foto(s) de WhatsApp o captura de pantalla.",
   ]);
 
   const pills = movementTypePills({
     allowed: availableMovementTypes,
     initial:
-      (state.captureNextMode && availableMovementTypes.includes(String(state.captureNextMode))
+      forcedMovementType ||
+      ((state.captureNextMode && availableMovementTypes.includes(String(state.captureNextMode))
         ? String(state.captureNextMode)
-        : availableMovementTypes[0]) || "venta",
+        : availableMovementTypes[0]) || "venta"),
     onChange: (mt) => updateMode(mt),
   });
   state.captureNextMode = null;
 
+  const showMovementTypePills = !forcedMovementType && availableMovementTypes.length > 1;
   let currentMode = pills.get();
   const linesWrap = h("div", { class: "col" });
   const lineRows = [];
@@ -3054,12 +3244,13 @@ function setBatchClosePresetState(value) {
 
       const draftLines = Array.isArray(draft.lines) ? draft.lines : [];
       if (draftLines.length > 0) {
-        while (lineRows.length < Math.min(draftLines.length, MAX_DRAFT_LINES)) addLine();
-        while (lineRows.length > Math.min(draftLines.length, MAX_DRAFT_LINES)) {
+        const lineLimit = entryOnlyCaptureForEmployee ? 16 : MAX_DRAFT_LINES;
+        while (lineRows.length < Math.min(draftLines.length, lineLimit)) addLine();
+        while (lineRows.length > Math.min(draftLines.length, lineLimit)) {
           const lastRow = lineRows.pop();
           if (lastRow?.el) lastRow.el.remove();
         }
-        const target = Math.min(draftLines.length, lineRows.length);
+        const target = Math.min(Math.min(draftLines.length, lineLimit), lineRows.length);
         for (let i = 0; i < target; i++) {
           lineRows[i].setValues(draftLines[i]);
         }
@@ -3143,7 +3334,21 @@ function setBatchClosePresetState(value) {
     traspasoSkuMeta.textContent = `Movimiento: ${left} -> ${right}`;
   }
 
+  const captureLineLimit = entryOnlyCaptureForEmployee ? 16 : MAX_DRAFT_LINES;
+  let addLineBtn = null;
+
+  function updateAddLineAvailability() {
+    if (!addLineBtn) return;
+    const atLimit = entryOnlyCaptureForEmployee && lineRows.length >= captureLineLimit;
+    addLineBtn.disabled = atLimit;
+    addLineBtn.textContent = atLimit ? `Máximo ${captureLineLimit} líneas` : "Agregar línea";
+  }
+
   function addLine() {
+    if (entryOnlyCaptureForEmployee && lineRows.length >= captureLineLimit) {
+      msg.replaceChildren(notice("warn", `La captura de entradas de empleado permite hasta ${captureLineLimit} líneas por registro.`));
+      return;
+    }
     const row = buildLineRow({
       products,
       qualities,
@@ -3156,6 +3361,7 @@ function setBatchClosePresetState(value) {
         if (idx >= 0) {
           lineRows.splice(idx, 1);
           row.el.remove();
+          updateAddLineAvailability();
           queueDraftSave();
         }
       },
@@ -3374,14 +3580,30 @@ function setBatchClosePresetState(value) {
         const aggregateSuffix = isAggregateMode && !isMarked ? ` [AGREGADO] registrado al cierre ${closeTime}` : "";
         const finalNotes = isAggregateMode ? `${noteBase}${aggregateSuffix}`.trim() : noteBase;
 
-        const files = isActorManager
+        const movementProofFiles = isActorManager
           ? Array.from(proofs?.files || [])
           : (state.captureEmployeeProofs || []).map((item) => item.file).filter(Boolean);
-        if (hasProofRequirement() && files.length === 0) {
+        const entrySheetProofFiles = !isActorManager && submitMode === "entrada"
+          ? (state.captureEmployeeEntrySheetProofs || []).map((item) => item.file).filter(Boolean)
+          : [];
+        const files = isActorManager
+          ? movementProofFiles
+          : submitMode === "entrada"
+            ? entrySheetProofFiles
+            : movementProofFiles;
+        if (!isActorManager && submitMode === "entrada" && entrySheetProofFiles.length === 0) {
+          msg.appendChild(notice("error", "Como empleado, debes adjuntar una foto de la hoja de entrada."));
+          return;
+        }
+        if (hasProofRequirement() && submitMode !== "entrada" && movementProofFiles.length === 0) {
           msg.appendChild(notice("error", "Como empleado, debes adjuntar evidencia para guardar el movimiento."));
           return;
         }
         const rawLines = lineRows.map((r) => r.get());
+        if (!isActorManager && submitMode === "entrada" && rawLines.length > captureLineLimit) {
+          msg.appendChild(notice("error", `La captura de entradas de empleado permite hasta ${captureLineLimit} líneas por registro.`));
+          return;
+        }
         const parsed = [];
         await maybeYield(1, 1);
 
@@ -3730,10 +3952,10 @@ function setBatchClosePresetState(value) {
 
   const card = h("div", { class: "col" }, [
     h("div", { class: "card col" }, [
-      h("div", { class: "h1", text: "Nuevo movimiento" }),
-      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
+      h("div", { class: "h1", text: forcedMovementType === "entrada" ? "Nueva entrada" : "Nuevo movimiento" }),
+      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : entryOnlyCaptureForEmployee ? "Todo se registra en kg. La hoja de entrada por foto es obligatoria para empleados." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
-      !isActorManager ? notice("warn", "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
+      !isActorManager ? notice("warn", entryOnlyCaptureForEmployee ? "Para guardar una entrada debes adjuntar una sola foto de la hoja de entrada." : "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
       h("div", { class: "row-wrap cash-draft-bar" }, [
         h("div", {
           class: "muted cash-draft-status",
@@ -3748,7 +3970,7 @@ function setBatchClosePresetState(value) {
         discardCaptureDraftBtn,
       ]),
       msg,
-      pills.el,
+      showMovementTypePills ? pills.el : null,
       mermaFlagsSection,
       h("div", { class: "divider" }),
       h("div", { class: "grid2" }, [
@@ -3787,12 +4009,19 @@ function setBatchClosePresetState(value) {
       h("div", { class: "divider" }),
       isActorManager
         ? field("Evidencia (fotos)", proofs)
-        : h("div", { class: "col" }, [
-            h("div", { class: "h1", text: "Evidencia (foto)" }),
-            employeeProofMsg,
-            employeeProofActions,
-            employeeProofsWrap,
-          ]),
+        : entryOnlyCaptureForEmployee
+          ? h("div", { class: "col" }, [
+              h("div", { class: "h1", text: "Hoja de entrada (foto obligatoria)" }),
+              employeeEntrySheetProofMsg,
+              employeeEntrySheetProofActions,
+              employeeEntrySheetProofsWrap,
+            ])
+          : h("div", { class: "col" }, [
+              h("div", { class: "h1", text: "Evidencia (foto)" }),
+              employeeProofMsg,
+              employeeProofActions,
+              employeeProofsWrap,
+            ]),
       proofsHint,
       h("div", { class: "row-wrap" }, [submitBtn]),
     ]),
@@ -3829,7 +4058,7 @@ function setBatchClosePresetState(value) {
   }
   card.addEventListener("input", () => queueDraftSave());
   card.addEventListener("change", () => queueDraftSave());
-  layout(ROUTE_TITLES.capture, card);
+  layout(pageTitle, card);
   updateMode(currentMode);
 }
 
@@ -8773,6 +9002,7 @@ async function render() {
   const pageCtx = createPageContext(r);
 
   if (r === "capture") return pageCapture(pageCtx);
+  if (r === "entries") return pageCapture(pageCtx, { forcedMovementType: "entrada", pageTitle: ROUTE_TITLES.entries });
   if (r === "cash") return pageCash(pageCtx);
   if (r === "movements") return pageMovements(pageCtx);
   if (r === "inventory") return pageInventory(pageCtx);

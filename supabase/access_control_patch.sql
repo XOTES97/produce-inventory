@@ -1052,7 +1052,7 @@ begin
     elsif v_employee_id <> v_actor_employee_id then
       raise exception 'employee_must_match_linked_employee';
     end if;
-    if v_mt not in ('venta', 'merma', 'traspaso_sku') then
+    if v_mt not in ('entrada', 'venta', 'merma', 'traspaso_sku') then
       raise exception 'employee_only_limited_types';
     end if;
     if v_mt = 'venta' then
@@ -1081,6 +1081,26 @@ begin
           end
       ) then
         raise exception 'employee_sale_only_per_box_skus';
+      end if;
+    end if;
+    if v_mt = 'entrada' then
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        where nullif(l->>'sku_id', '') is null
+      ) then
+        raise exception 'employee_entry_requires_sku';
+      end if;
+      if exists (
+        select 1
+        from jsonb_array_elements(lines) as l
+        left join public.skus s on s.id = nullif(l->>'sku_id', '')::uuid
+        where s.id is null
+          or not public.actor_can_access_owner(s.owner_id)
+          or s.product_id is distinct from nullif(l->>'product_id', '')::uuid
+          or s.quality_id is distinct from nullif(l->>'quality_id', '')::uuid
+      ) then
+        raise exception 'employee_entry_requires_sku';
       end if;
     end if;
     if v_mt = 'merma' then

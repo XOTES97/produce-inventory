@@ -1,5 +1,5 @@
 -- One-time patch for an existing Supabase project.
--- Adds employee sale-SKU restrictions visible in Ajustes and tightens employee capture rules.
+-- Adds employee Entrada capture support, including the dedicated Entradas tab rules and current employee capture restrictions.
 
 create extension if not exists pg_net;
 create extension if not exists vault;
