@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.19.16";
-import { supabase } from "./supabaseClient.js?v=2026.03.19.16";
+import * as cfg from "./config.js?v=2026.03.20.01";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.01";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.19.16";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.01";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -2303,6 +2303,11 @@ function movementTypePills({ onChange, allowed = movementTypesForActor(), initia
 function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCapture = false, getAllowedSkusForMode = null }) {
   let currentMode = mode;
   const allSkus = Array.isArray(skus) ? [...skus] : [];
+  const ENTRY_TARE_PRESET_WEIGHTS = {
+    tarima_promedio: 15,
+    tarima_bin: 30,
+    tarima_bin_doble: 60,
+  };
   const skuSel = h("select", {});
 
   const productSel = h("select", {}, optionList(products, { includeEmpty: true, emptyLabel: "Producto..." }));
@@ -2420,6 +2425,13 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
 
   function updateEntryTarePresentation() {
     const selected = String(tarePreset.value || "manual");
+    const presetWeight = ENTRY_TARE_PRESET_WEIGHTS[selected];
+    if (Number.isFinite(presetWeight)) {
+      tareWeight.value = formatWeightInput(presetWeight);
+      tareWeight.readOnly = true;
+    } else {
+      tareWeight.readOnly = false;
+    }
     if (selected === "manual") {
       tareWeight.placeholder = "tara kg";
     } else if (selected === "tarima_promedio") {
