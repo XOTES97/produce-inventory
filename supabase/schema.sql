@@ -104,8 +104,7 @@ create table if not exists public.skus (
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (owner_id, code),
-  unique (owner_id, name)
+  unique (owner_id, code)
 );
 
 create index if not exists skus_owner_code_idx

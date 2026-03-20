@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.10";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.10";
+import * as cfg from "./config.js?v=2026.03.20.11";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.11";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.10";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.11";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -8644,6 +8644,7 @@ async function pageSettings(pageCtx) {
   const newSkuName = h("input", { type: "text", placeholder: "Ej: Papaya 2da Caja" });
   const newSkuProduct = h("select", {}, optionList(state.products, { includeEmpty: true, emptyLabel: "Producto..." }));
   const newSkuQuality = h("select", {}, optionList(state.qualities, { includeEmpty: true, emptyLabel: "Calidad..." }));
+  const skuMsg = h("div");
   const newSkuPm = h(
     "select",
     {},
@@ -8661,6 +8662,7 @@ async function pageSettings(pageCtx) {
       type: "button",
       onclick: async () => {
         msg.replaceChildren();
+        skuMsg.replaceChildren();
         const code = Number(newSkuCode.value);
         const name = String(newSkuName.value || "").trim();
         const product_id = String(newSkuProduct.value || "");
@@ -8668,15 +8670,19 @@ async function pageSettings(pageCtx) {
         const default_price_model = String(newSkuPm.value || "") || null;
 
         if (!Number.isFinite(code) || code <= 0) {
-          msg.appendChild(notice("error", "Codigo SKU invalido."));
+          skuMsg.appendChild(notice("error", "Codigo SKU invalido."));
           return;
         }
         if (!name) {
-          msg.appendChild(notice("error", "Nombre de SKU requerido."));
+          skuMsg.appendChild(notice("error", "Nombre de SKU requerido."));
           return;
         }
         if (!product_id || !quality_id) {
-          msg.appendChild(notice("error", "SKU requiere producto y calidad."));
+          skuMsg.appendChild(notice("error", "SKU requiere producto y calidad."));
+          return;
+        }
+        if ((state.skus || []).some((s) => Number(s.code) === Math.trunc(code))) {
+          skuMsg.appendChild(notice("error", "Ya existe un SKU con ese código."));
           return;
         }
 
@@ -8684,7 +8690,13 @@ async function pageSettings(pageCtx) {
           .from("skus")
           .insert({ code: Math.trunc(code), name, product_id, quality_id, default_price_model });
         if (error) {
-          msg.appendChild(notice("error", error.message));
+          const raw = String(error?.message || "");
+          const friendly = raw.includes("skus_owner_id_code_key")
+            ? "Ya existe un SKU con ese código."
+            : raw.includes("skus_owner_id_name_key")
+              ? "La base todavía está bloqueando nombres repetidos de SKU. Ejecuta el parche de nombres duplicados y vuelve a intentar."
+              : raw;
+          skuMsg.appendChild(notice("error", friendly));
           return;
         }
         newSkuCode.value = "";
@@ -8692,6 +8704,7 @@ async function pageSettings(pageCtx) {
         newSkuProduct.value = "";
         newSkuQuality.value = "";
         newSkuPm.value = "";
+        skuMsg.appendChild(notice("ok", "SKU agregado."));
         await refreshMaster();
       },
     },
@@ -9054,6 +9067,7 @@ async function pageSettings(pageCtx) {
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: "Nuevo SKU" }),
       h("div", { class: "muted", text: "SKU = codigo + nombre, mapeado a (producto, calidad). Varias SKUs pueden compartir el mismo inventario." }),
+      skuMsg,
       h("div", { class: "grid2" }, [field("Codigo", newSkuCode), field("Nombre", newSkuName)]),
       h("div", { class: "grid2" }, [field("Producto", newSkuProduct), field("Calidad", newSkuQuality)]),
       field("Default", newSkuPm),
