@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.02";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.02";
+import * as cfg from "./config.js?v=2026.03.20.04";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.04";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.02";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.04";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -22,8 +22,8 @@ const ROUTE_TITLES = {
 };
 
 const NAV_ITEMS = [
-  { route: "entries", label: "Entradas", icon: "IN", role: "employee" },
-  { route: "capture", label: "Capturar", icon: "+" },
+  { route: "entries", label: "Entradas", employeeLabel: "In", icon: "IN", role: "employee" },
+  { route: "capture", label: "Capturar", employeeLabel: "Log", icon: "+" },
   { route: "cash", label: "Caja", icon: "$" },
   { route: "movements", label: "Movimientos", icon: "LOG" },
   { route: "inventory", label: "Inventario", icon: "KG" },
@@ -1940,7 +1940,13 @@ function layout(pageTitle, contentEl, { showNav } = { showNav: true }) {
                 navTo(it.route);
               },
             },
-            [h("div", { class: "icon", text: it.icon }), h("div", { class: "label", text: it.label })]
+            [
+              h("div", { class: "icon", text: it.icon }),
+              h("div", {
+                class: "label",
+                text: state.actor?.role === "employee" && it.employeeLabel ? it.employeeLabel : it.label,
+              }),
+            ]
           )
         )
       ),
@@ -2300,7 +2306,7 @@ function movementTypePills({ onChange, allowed = movementTypesForActor(), initia
   };
 }
 
-function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCapture = false, getAllowedSkusForMode = null }) {
+function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCapture = false, employeeName = "", getAllowedSkusForMode = null }) {
   let currentMode = mode;
   const allSkus = Array.isArray(skus) ? [...skus] : [];
   const ENTRY_TARE_PRESET_WEIGHTS = {
@@ -2349,7 +2355,18 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     h("div", { class: "muted", text: "Si capturas peso bruto y tara, el peso neto se calcula automáticamente. Si dejas peso bruto vacío, puedes capturar solo el peso neto." }),
   ]);
   const entryBoxesRow = h("div", { class: "grid2" }, [entryBoxesSlot, entryHint]);
+  const entryLineProofMsg = h("div");
+  const entryLineProofActions = h("div", { class: "row-wrap" });
+  const entryLineProofsWrap = h("div", { class: "row-wrap" });
+  const entryLineProofSection = h("div", { class: "col" }, [
+    h("div", { class: "h1", text: "Foto(s) de esta línea" }),
+    h("div", { class: "muted", text: "Se requiere al menos una foto por línea." }),
+    entryLineProofMsg,
+    entryLineProofActions,
+    entryLineProofsWrap,
+  ]);
   const totalRow = h("div", { class: "row" }, [h("div", { class: "spacer" }), total]);
+  const entryLineProofs = [];
 
   function allowedSkusForMode(nextMode = currentMode) {
     if (typeof getAllowedSkusForMode === "function") {
@@ -2444,6 +2461,58 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     syncEntryNetWeight();
   }
 
+  function clearEntryLineProofs() {
+    for (const item of entryLineProofs) revokeObjectUrl(item?.preview_url);
+    entryLineProofs.length = 0;
+  }
+
+  function renderEntryLineProofs() {
+    entryLineProofsWrap.replaceChildren();
+    if (entryLineProofs.length === 0) {
+      entryLineProofsWrap.appendChild(h("div", { class: "muted", text: "Todavía no hay fotos para esta línea." }));
+      return;
+    }
+    entryLineProofs.forEach((item, index) => {
+      entryLineProofsWrap.appendChild(
+        h("div", { class: "thumb-wrap col" }, [
+          h("img", {
+            class: "thumb",
+            src: item.preview_url,
+            alt: item.file?.name || `linea-${index + 1}`,
+          }),
+          h("div", { class: "muted", text: item.stamp_text || employeeCaptureStampTime(new Date(item.captured_at_iso || Date.now())) }),
+          h(
+            "button",
+            {
+              class: "btn btn-ghost",
+              type: "button",
+              onclick: () => {
+                const removed = entryLineProofs.splice(index, 1)[0];
+                revokeObjectUrl(removed?.preview_url);
+                renderEntryLineProofs();
+              },
+            },
+            ["Quitar"]
+          ),
+        ])
+      );
+    });
+  }
+
+  async function captureEntryLineProof() {
+    entryLineProofMsg.replaceChildren();
+    try {
+      const captured = await openEmployeeCameraCaptureModal({ employeeName, title: "Tomar foto de línea" });
+      if (!captured) return;
+      entryLineProofs.push(captured);
+      renderEntryLineProofs();
+    } catch (error) {
+      entryLineProofMsg.replaceChildren(
+        notice("error", error?.message ? String(error.message) : "No se pudo tomar la foto de la línea.")
+      );
+    }
+  }
+
   skuSel.addEventListener("change", () => {
     syncSkuDerivedFields();
     if (currentMode === "venta") {
@@ -2509,10 +2578,28 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     ]),
     entryTareGrid,
     entryBoxesRow,
+    entryLineProofSection,
     saleGrid,
     totalRow,
     h("div", { class: "row-wrap" }, [h("div", { class: "spacer" }), removeBtn]),
   ]);
+
+  entryLineProofActions.append(
+    h("button", { class: "btn btn-primary", type: "button", onclick: captureEntryLineProof }, ["Tomar foto de línea"]),
+    h(
+      "button",
+      {
+        class: "btn btn-ghost",
+        type: "button",
+        onclick: () => {
+          clearEntryLineProofs();
+          renderEntryLineProofs();
+        },
+      },
+      ["Limpiar fotos"]
+    )
+  );
+  renderEntryLineProofs();
 
   function get() {
     return {
@@ -2553,6 +2640,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     saleGrid.style.display = nextMode === "venta" ? "" : "none";
     entryTareGrid.style.display = nextMode === "entrada" ? "" : "none";
     entryBoxesRow.style.display = nextMode === "entrada" ? "" : "none";
+    entryLineProofSection.style.display = nextMode === "entrada" && employeeCapture ? "" : "none";
     totalRow.style.display = nextMode === "venta" ? "" : "none";
     const employeeSkuDrivenMode = employeeCapture && nextMode !== "traspaso_calidad" && nextMode !== "traspaso_sku";
 
@@ -2651,7 +2739,15 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   refreshSkuOptions(currentMode, false);
   setVisibilityForMode(currentMode);
 
-  return { el: row, get, setMode: setVisibilityForMode, setProductQuality, setValues };
+  return {
+    el: row,
+    get,
+    setMode: setVisibilityForMode,
+    setProductQuality,
+    setValues,
+    getLineProofFiles: () => entryLineProofs.map((item) => item.file).filter(Boolean),
+    dispose: () => clearEntryLineProofs(),
+  };
 }
 
 function buildMovementLinePreviewItems(lines, movementType, currency, maxLines = MOVEMENT_LINES_PREVIEW_LIMIT) {
@@ -3135,7 +3231,7 @@ function setBatchClosePresetState(value) {
   const proofsHint = h("div", { class: "muted" }, [
     actorRequiresEmployee
       ? entryOnlyCaptureForEmployee
-        ? "Entrada de empleado: se requiere una sola foto de la hoja de entrada para todo el registro."
+        ? "Entrada de empleado: se requiere al menos una foto por línea y una foto final de la hoja de entrada."
         : "Evidencia obligatoria (empleado): solo se permite tomar la foto desde la cámara de la app."
       : "Evidencia (opcional): foto(s) de WhatsApp o captura de pantalla.",
   ]);
@@ -3367,11 +3463,13 @@ function setBatchClosePresetState(value) {
       skus,
       mode: currentMode,
       employeeCapture: !isActorManager,
+      employeeName: actorDisplayName,
       getAllowedSkusForMode: allowedLineSkusForMode,
       onRemove: () => {
         const idx = lineRows.indexOf(row);
         if (idx >= 0) {
           lineRows.splice(idx, 1);
+          row.dispose?.();
           row.el.remove();
           updateAddLineAvailability();
           queueDraftSave();
@@ -3598,10 +3696,13 @@ function setBatchClosePresetState(value) {
         const entrySheetProofFiles = !isActorManager && submitMode === "entrada"
           ? (state.captureEmployeeEntrySheetProofs || []).map((item) => item.file).filter(Boolean)
           : [];
+        const entryLineProofFiles = !isActorManager && submitMode === "entrada"
+          ? lineRows.map((row) => row.getLineProofFiles?.() || [])
+          : [];
         const files = isActorManager
           ? movementProofFiles
           : submitMode === "entrada"
-            ? entrySheetProofFiles
+            ? [...entryLineProofFiles.flat(), ...entrySheetProofFiles]
             : movementProofFiles;
         if (!isActorManager && submitMode === "entrada" && entrySheetProofFiles.length === 0) {
           msg.appendChild(notice("error", "Como empleado, debes adjuntar una foto de la hoja de entrada."));
@@ -3615,6 +3716,14 @@ function setBatchClosePresetState(value) {
         if (!isActorManager && submitMode === "entrada" && rawLines.length > captureLineLimit) {
           msg.appendChild(notice("error", `La captura de entradas de empleado permite hasta ${captureLineLimit} líneas por registro.`));
           return;
+        }
+        if (!isActorManager && submitMode === "entrada") {
+          for (let i = 0; i < entryLineProofFiles.length; i++) {
+            if ((entryLineProofFiles[i] || []).length === 0) {
+              msg.appendChild(notice("error", `Linea ${i + 1}: debes adjuntar al menos una foto.`));
+              return;
+            }
+          }
         }
         const parsed = [];
         await maybeYield(1, 1);
@@ -3965,9 +4074,9 @@ function setBatchClosePresetState(value) {
   const card = h("div", { class: "col" }, [
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: forcedMovementType === "entrada" ? "Nueva entrada" : "Nuevo movimiento" }),
-      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : entryOnlyCaptureForEmployee ? "Todo se registra en kg. La hoja de entrada por foto es obligatoria para empleados." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
+      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : entryOnlyCaptureForEmployee ? "Todo se registra en kg. Se requiere al menos una foto por línea y una foto final de la hoja de entrada." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
-      !isActorManager ? notice("warn", entryOnlyCaptureForEmployee ? "Para guardar una entrada debes adjuntar una sola foto de la hoja de entrada." : "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
+      !isActorManager ? notice("warn", entryOnlyCaptureForEmployee ? "Para guardar una entrada debes adjuntar al menos una foto por línea y una foto final de la hoja de entrada." : "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
       h("div", { class: "row-wrap cash-draft-bar" }, [
         h("div", {
           class: "muted cash-draft-status",
