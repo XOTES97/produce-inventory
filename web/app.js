@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.11";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.11";
+import * as cfg from "./config.js?v=2026.03.20.12";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.12";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.11";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.12";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -341,8 +341,8 @@ function movementTypesForActor() {
   return MOVEMENT_TYPES_BY_ROLE[actorRole()] || MOVEMENT_TYPES_BY_ROLE.manager;
 }
 
-function hasProofRequirement() {
-  return actorRole() === "employee";
+function hasProofRequirement(movementType = "") {
+  return actorRole() === "employee" && String(movementType || "").trim() === "entrada";
 }
 
 function actorEmployeeId() {
@@ -363,7 +363,7 @@ function normalizeActorRoleError(message) {
     case "employee_only_limited_types":
       return "Este usuario solo puede capturar entrada, venta, merma o traspaso entre SKUs.";
     case "proof_required_for_employee":
-      return "Los empleados deben adjuntar al menos una evidencia para registrar el movimiento.";
+      return "Las entradas de empleado deben adjuntar la evidencia obligatoria.";
     case "entry_sheet_proof_required_for_employee":
       return "Como empleado, debes adjuntar una foto adicional de la hoja de entrada.";
     case "employee_not_linked":
@@ -2894,10 +2894,10 @@ async function pageCapture(pageCtx, options = {}) {
   }
 
   const isActorManager = isManager();
-  const actorRequiresEmployee = hasProofRequirement();
   const autoEmpId = actorEmployeeId();
   const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
   const entryOnlyCaptureForEmployee = !isActorManager && forcedMovementType === "entrada";
+  const actorRequiresEmployee = hasProofRequirement(forcedMovementType);
   if (!isActorManager) {
     storageRemove(STORAGE_KEYS.captureFixedDatetimeLock);
     storageRemove(STORAGE_KEYS.captureFixedDatetimeValue);
@@ -3783,10 +3783,6 @@ function setBatchClosePresetState(value) {
           msg.appendChild(notice("error", "Como empleado, debes adjuntar una foto de la hoja de entrada."));
           return;
         }
-        if (hasProofRequirement() && submitMode !== "entrada" && movementProofFiles.length === 0) {
-          msg.appendChild(notice("error", "Como empleado, debes adjuntar evidencia para guardar el movimiento."));
-          return;
-        }
         const rawLines = lineRows.map((r) => r.get());
         if (!isActorManager && submitMode === "entrada" && rawLines.length > captureLineLimit) {
           msg.appendChild(notice("error", `La captura de entradas de empleado permite hasta ${captureLineLimit} líneas por registro.`));
@@ -4155,9 +4151,9 @@ function setBatchClosePresetState(value) {
   const card = h("div", { class: "col" }, [
     h("div", { class: "card col" }, [
       h("div", { class: "h1", text: forcedMovementType === "entrada" ? "Nueva entrada" : "Nuevo movimiento" }),
-      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : entryOnlyCaptureForEmployee ? "Todo se registra en kg. Se requiere al menos una foto por línea y una foto final de la hoja de entrada. El video por línea es opcional." : "Todo se registra en kg. La evidencia por foto es obligatoria para empleados." }),
+      h("div", { class: "muted", text: isActorManager ? "Todo se registra en kg. Evidencia (WhatsApp) opcional." : entryOnlyCaptureForEmployee ? "Todo se registra en kg. Se requiere al menos una foto por línea y una foto final de la hoja de entrada. El video por línea es opcional." : "Todo se registra en kg. La evidencia por foto es opcional para empleados." }),
       h("div", { class: "muted", text: "Nota: el inventario se calcula por (Producto + Calidad). SKUs vinculados comparten saldo (ej: 103 descuenta de 102; 106 descuenta de 101; 301 descuenta de 300)." }),
-      !isActorManager ? notice("warn", entryOnlyCaptureForEmployee ? "Para guardar una entrada debes adjuntar al menos una foto por línea y una foto final de la hoja de entrada. El video por línea es opcional." : "Evidencia por medio de foto necesaria para poder capturar un movimiento.") : null,
+      !isActorManager && entryOnlyCaptureForEmployee ? notice("warn", "Para guardar una entrada debes adjuntar al menos una foto por línea y una foto final de la hoja de entrada. El video por línea es opcional.") : null,
       h("div", { class: "row-wrap cash-draft-bar" }, [
         h("div", {
           class: "muted cash-draft-status",
@@ -4219,7 +4215,7 @@ function setBatchClosePresetState(value) {
               employeeEntrySheetProofsWrap,
             ])
           : h("div", { class: "col" }, [
-              h("div", { class: "h1", text: "Evidencia (foto)" }),
+              h("div", { class: "h1", text: "Evidencia (foto opcional)" }),
               employeeProofMsg,
               employeeProofActions,
               employeeProofsWrap,

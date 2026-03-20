@@ -463,7 +463,7 @@ begin
         raise exception 'traspaso_sku_not_allowed';
       end if;
     end if;
-    if jsonb_array_length(attachments) < 1 then
+    if v_mt = 'entrada' and jsonb_array_length(attachments) < 1 then
       raise exception 'proof_required_for_employee';
     end if;
   end if;
