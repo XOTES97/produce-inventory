@@ -1165,7 +1165,8 @@ textarea { min-height: 84px; resize: vertical; }
   border-radius: 18px;
   overflow: hidden;
   border: 1px solid var(--line);
-  background: #0e1723;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(232, 238, 247, 0.95), rgba(244, 247, 251, 0.92) 55%, rgba(226, 234, 244, 0.98));
   min-height: 260px;
 }
 
@@ -1174,5 +1175,20 @@ textarea { min-height: 84px; resize: vertical; }
   width: 100%;
   max-height: min(68dvh, 720px);
   object-fit: cover;
-  background: #0e1723;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.camera-video[data-ready="1"] {
+  opacity: 1;
+}
+
+.camera-actions {
+  justify-content: flex-end;
+  padding-right: 10px;
+}
+
+.camera-capture-btn {
+  margin-right: 6px;
 }

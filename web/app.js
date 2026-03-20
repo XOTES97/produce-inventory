@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.04";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.04";
+import * as cfg from "./config.js?v=2026.03.20.05";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.05";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.04";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.05";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -693,6 +693,7 @@ async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evi
     });
     video.muted = true;
     video.playsInline = true;
+    video.dataset.ready = "0";
 
     let stream = null;
     let closed = false;
@@ -753,6 +754,7 @@ async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evi
       },
       ["Capturar foto"]
     );
+    captureBtn.classList.add("camera-capture-btn");
 
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) close(null);
@@ -771,7 +773,7 @@ async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evi
       header,
       msg,
       h("div", { class: "camera-frame" }, [video]),
-      h("div", { class: "row-wrap" }, [h("div", { class: "spacer" }), captureBtn])
+      h("div", { class: "row-wrap camera-actions" }, [captureBtn])
     );
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
@@ -792,6 +794,7 @@ async function openEmployeeCameraCaptureModal({ employeeName, title = "Tomar evi
         });
         video.srcObject = stream;
         await video.play();
+        video.dataset.ready = "1";
         msg.replaceChildren(notice("ok", "Toma la foto y presiona Capturar foto."));
         captureBtn.disabled = false;
       } catch (error) {
