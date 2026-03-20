@@ -959,6 +959,10 @@ textarea { min-height: 84px; resize: vertical; }
   background: rgba(255,255,255,0.78);
 }
 
+.thumb-video {
+  display: block;
+}
+
 .movement-lines-preview {
   border: 1px solid var(--line);
   border-radius: 12px;
