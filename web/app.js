@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.08";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.08";
+import * as cfg from "./config.js?v=2026.03.20.10";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.10";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.08";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.10";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -2324,7 +2324,8 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   const weight = h("input", { type: "number", step: "0.001", min: "0", placeholder: "kg" });
   const grossWeight = h("input", { type: "number", step: "0.001", min: "0", placeholder: "peso bruto kg" });
   const tarePreset = h("select", {}, [
-    h("option", { value: "manual", text: "Manual" }),
+    h("option", { value: "", text: "Selecciona tipo de tara..." }),
+    h("option", { value: "manual", text: "Sin tarima / Peso manual" }),
     h("option", { value: "tarima_promedio", text: "Tarima promedio" }),
     h("option", { value: "tarima_bin", text: "Tarima y bin" }),
     h("option", { value: "tarima_bin_doble", text: "Tarima y bin doble" }),
@@ -2345,7 +2346,15 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   const qualityField = h("div", { style: "flex: 1; min-width: 180px" }, [field("Calidad", qualitySel)]);
   const weightField = h("div", { style: "flex: 1; min-width: 140px" }, [field("Peso (kg)", weight)]);
   const grossWeightField = field("Peso Bruto (kg)", grossWeight);
-  const tarePresetField = field("Tipo de tara", tarePreset);
+  const tarePresetField = field(
+    [
+      document.createTextNode("Tipo de tara "),
+      h("span", { class: "muted", text: "(Tarima, Bin o Bin doble)" }),
+      document.createTextNode(" "),
+      h("span", { class: "required-mark", text: "(Obligatorio)" }),
+    ],
+    tarePreset
+  );
   const tareWeightField = field("Tara a restar (kg)", tareWeight);
   const boxesField = field("Cajas (opcional)", boxes);
   const priceModelField = field("Modelo", priceModel);
@@ -2357,6 +2366,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   const entryHint = h("div", { class: "notice" }, [
     h("div", { class: "muted", text: "Si capturas peso bruto y tara, el peso neto se calcula automáticamente. Si dejas peso bruto vacío, puedes capturar solo el peso neto." }),
   ]);
+  const entryNetWeightRow = h("div", { class: "row-wrap" }, [weightField]);
   const entryBoxesRow = h("div", { class: "grid2" }, [entryBoxesSlot, entryHint]);
   const entryLineProofMsg = h("div");
   const entryLineProofActions = h("div", { class: "row-wrap" });
@@ -2452,15 +2462,17 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
   }
 
   function updateEntryTarePresentation() {
-    const selected = String(tarePreset.value || "manual");
+    const selected = String(tarePreset.value || "");
     const presetWeight = ENTRY_TARE_PRESET_WEIGHTS[selected];
     if (Number.isFinite(presetWeight)) {
       tareWeight.value = formatWeightInput(presetWeight);
       tareWeight.readOnly = true;
     } else {
-      tareWeight.readOnly = false;
+      tareWeight.readOnly = !selected;
     }
-    if (selected === "manual") {
+    if (!selected) {
+      tareWeight.placeholder = "elige tipo de tara primero";
+    } else if (selected === "manual") {
       tareWeight.placeholder = "tara kg";
     } else if (selected === "tarima_promedio") {
       tareWeight.placeholder = "tara kg (tarima promedio)";
@@ -2631,9 +2643,9 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     h("div", { class: "row-wrap" }, [
       productField,
       qualityField,
-      weightField,
     ]),
     entryTareGrid,
+    entryNetWeightRow,
     entryBoxesRow,
     entryLineProofSection,
     saleGrid,
@@ -2666,7 +2678,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       quality_id: String(qualitySel.value || ""),
       weight_kg: String(weight.value || ""),
       gross_weight_kg: String(grossWeight.value || ""),
-      tare_preset: String(tarePreset.value || "manual"),
+      tare_preset: String(tarePreset.value || ""),
       tare_weight_kg: String(tareWeight.value || ""),
       boxes: String(boxes.value || ""),
       price_model: String(priceModel.value || ""),
@@ -2682,7 +2694,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
     qualitySel.value = String(values.quality_id || "");
     weight.value = String(values.weight_kg != null ? values.weight_kg : "");
     grossWeight.value = String(values.gross_weight_kg != null ? values.gross_weight_kg : "");
-    tarePreset.value = String(values.tare_preset || "manual");
+    tarePreset.value = String(values.tare_preset || "");
     tareWeight.value = String(values.tare_weight_kg != null ? values.tare_weight_kg : "");
     boxes.value = String(values.boxes != null ? values.boxes : "");
     priceModel.value = String(values.price_model || "");
@@ -2775,7 +2787,7 @@ function buildLineRow({ products, qualities, skus, mode, onRemove, employeeCaptu
       weightField.querySelector("label")?.replaceChildren(document.createTextNode("Peso (kg)"));
       weight.readOnly = false;
       grossWeight.value = "";
-      tarePreset.value = "manual";
+      tarePreset.value = "";
       tareWeight.value = "";
     }
     syncSkuDerivedFields();
@@ -3781,6 +3793,12 @@ function setBatchClosePresetState(value) {
           return;
         }
         if (!isActorManager && submitMode === "entrada") {
+          for (let i = 0; i < rawLines.length; i++) {
+            if (!String(rawLines[i]?.tare_preset || "").trim()) {
+              msg.appendChild(notice("error", `Linea ${i + 1}: elige un tipo de tara.`));
+              return;
+            }
+          }
           for (let i = 0; i < entryLinePhotoFiles.length; i++) {
             if ((entryLinePhotoFiles[i] || []).length === 0) {
               msg.appendChild(notice("error", `Linea ${i + 1}: debes adjuntar al menos una foto. El video es opcional.`));

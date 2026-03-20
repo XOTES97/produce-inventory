@@ -367,6 +367,9 @@ textarea { min-height: 84px; resize: vertical; }
   left: 0;
   right: 0;
   bottom: 0;
+  box-sizing: border-box;
+  padding-left: 8px;
+  padding-right: 8px;
   z-index: 20;
   border-top: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(250, 253, 255, 0.94), rgba(244, 247, 251, 0.99));
@@ -380,10 +383,11 @@ textarea { min-height: 84px; resize: vertical; }
 .bottomnav-inner {
   max-width: 980px;
   margin: 0 auto;
+  width: 100%;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 8px;
-  padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
 }
 
 .navbtn {
@@ -913,9 +917,13 @@ textarea { min-height: 84px; resize: vertical; }
 }
 
 @media (max-width: 430px) {
+  .bottomnav {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
   .bottomnav-inner {
     gap: 7px;
-    padding: 8px 6px calc(8px + env(safe-area-inset-bottom));
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
   }
   .navbtn {
     min-height: 64px;
