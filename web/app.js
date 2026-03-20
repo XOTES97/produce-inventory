@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.12";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.12";
+import * as cfg from "./config.js?v=2026.03.20.13";
+import { supabase } from "./supabaseClient.js?v=2026.03.20.13";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.12";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.20.13";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -2897,7 +2897,6 @@ async function pageCapture(pageCtx, options = {}) {
   const autoEmpId = actorEmployeeId();
   const actorDisplayName = getActorDisplayName() || employeeName(autoEmpId) || "Empleado asociado";
   const entryOnlyCaptureForEmployee = !isActorManager && forcedMovementType === "entrada";
-  const actorRequiresEmployee = hasProofRequirement(forcedMovementType);
   if (!isActorManager) {
     storageRemove(STORAGE_KEYS.captureFixedDatetimeLock);
     storageRemove(STORAGE_KEYS.captureFixedDatetimeValue);
@@ -3301,11 +3300,9 @@ function setBatchClosePresetState(value) {
   }
 
   const proofsHint = h("div", { class: "muted" }, [
-    actorRequiresEmployee
-      ? entryOnlyCaptureForEmployee
-        ? "Entrada de empleado: se requiere al menos una foto por línea y una foto final de la hoja de entrada. El video corto por línea es opcional."
-        : "Evidencia obligatoria (empleado): solo se permite tomar la foto desde la cámara de la app."
-      : "Evidencia (opcional): foto(s) de WhatsApp o captura de pantalla.",
+    isActorManager
+      ? "Evidencia (opcional): foto(s) de WhatsApp o captura de pantalla."
+      : "Entrada de empleado: se requiere al menos una foto por línea y una foto final de la hoja de entrada. El video corto por línea es opcional.",
   ]);
 
   const pills = movementTypePills({
@@ -3764,7 +3761,7 @@ function setBatchClosePresetState(value) {
 
         const movementProofFiles = isActorManager
           ? Array.from(proofs?.files || [])
-          : (state.captureEmployeeProofs || []).map((item) => item.file).filter(Boolean);
+          : [];
         const entrySheetProofFiles = !isActorManager && submitMode === "entrada"
           ? (state.captureEmployeeEntrySheetProofs || []).map((item) => item.file).filter(Boolean)
           : [];
@@ -4214,13 +4211,8 @@ function setBatchClosePresetState(value) {
               employeeEntrySheetProofActions,
               employeeEntrySheetProofsWrap,
             ])
-          : h("div", { class: "col" }, [
-              h("div", { class: "h1", text: "Evidencia (foto opcional)" }),
-              employeeProofMsg,
-              employeeProofActions,
-              employeeProofsWrap,
-            ]),
-      proofsHint,
+          : null,
+      isActorManager || entryOnlyCaptureForEmployee ? proofsHint : null,
       h("div", { class: "row-wrap" }, [submitBtn]),
     ]),
     h("div", { class: "notice" }, [
@@ -4230,7 +4222,7 @@ function setBatchClosePresetState(value) {
       ]),
   ]);
 
-  if (!isActorManager && state.captureEmployeeProofs.length === 0) {
+  if (!isActorManager && entryOnlyCaptureForEmployee && state.captureEmployeeProofs.length === 0) {
     const restoredProofs = await loadStoredEmployeeCaptureProofs();
     if (!isActive()) return;
     if (restoredProofs.length > 0) {
@@ -4239,6 +4231,10 @@ function setBatchClosePresetState(value) {
       restoredProofDraftNotice = true;
       renderEmployeeProofs();
     }
+  }
+  if (!isActorManager && !entryOnlyCaptureForEmployee && state.captureEmployeeProofs.length > 0) {
+    clearEmployeeProofList("captureEmployeeProofs");
+    await persistEmployeeCaptureProofs();
   }
 
   restoredCaptureDraftNotice = applyCaptureDraft();
