@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.21.01";
-import { supabase } from "./supabaseClient.js?v=2026.03.21.01";
+import * as cfg from "./config.js?v=2026.03.21.02";
+import { supabase } from "./supabaseClient.js?v=2026.03.21.02";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.21.01";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.21.02";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -7231,7 +7231,7 @@ async function pageCash(pageCtx) {
     const posTable = h("table", { class: "table" }, [
       h("tbody", {}, [
         h("tr", {}, [h("th", { text: "Factura global / venta" }), h("td", { text: fmtMoney(cut.invoice_sale_amount) }), h("th", { text: "Suma de recibos contado" }), h("td", { text: fmtMoney(cut.cash_receipts_amount) })]),
-        h("tr", {}, [h("th", { text: "Reembolso recibos" }), h("td", { text: fmtMoney(cut.refund_receipts_amount) }), h("th", { text: "Venta neta de contado" }), h("td", { text: fmtMoney(cut.net_cash_sales_amount) })]),
+        h("tr", {}, [h("th", { text: "Cancelados / Reembolsos" }), h("td", { text: fmtMoney(cut.refund_receipts_amount) }), h("th", { text: "Venta neta de contado" }), h("td", { text: fmtMoney(cut.net_cash_sales_amount) })]),
         h("tr", {}, [h("th", { text: "Ventas a crédito facturadas" }), h("td", { text: fmtMoney(cut.credit_invoiced_sales_amount) }), h("th", { text: "Ventas en efectivo facturadas" }), h("td", { text: fmtMoney(cut.cash_invoiced_sales_amount) })]),
         h("tr", {}, [h("th", { text: "Total de ventas facturadas" }), h("td", { text: fmtMoney(cut.total_invoiced_sales_amount) }), h("th", { text: "Impacto en arqueo" }), h("td", { text: "Informativo; no cambia la diferencia automática" })]),
         h("tr", {}, [h("th", { text: "Ventas moneda nacional" }), h("td", { text: fmtMoney(cut.sales_mxn_amount) }), h("th", { text: "Ventas dólar (USD)" }), h("td", { text: fmtMoney(cut.sales_usd_amount, "USD") })]),
@@ -7798,7 +7798,7 @@ async function pageCash(pageCtx) {
     h("div", { class: "muted cash-section-note", text: "Factura global / venta, ventas facturadas y folios de tickets ya no son opcionales. Si un importe no aplica ese día, captura 0." }),
     h("div", { class: "muted cash-section-note", text: "El total de ventas facturadas se calcula automáticamente. Es informativo y no cambia automáticamente el arqueo; la diferencia sigue comparándose contra Versatil." }),
     posWarningWrap,
-    h("div", { class: "grid3" }, [cashField(requiredLabel("Factura global / venta"), invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Reembolso recibos", refundReceiptsInput)]),
+    h("div", { class: "grid3" }, [cashField(requiredLabel("Factura global / venta"), invoiceSaleInput), cashField("Suma de recibos contado", cashReceiptsInput), cashField("Cancelados / Reembolsos", refundReceiptsInput)]),
     h("div", { class: "grid3" }, [cashField(requiredLabel("Ventas a crédito facturadas"), creditInvoicedSalesInput), cashField(requiredLabel("Ventas en efectivo facturadas"), cashInvoicedSalesInput), cashField(automaticLabel("Total de ventas facturadas"), totalInvoicedSalesInput)]),
     h("div", { class: "grid3" }, [cashField(automaticLabel("Venta neta de contado"), netCashSalesInput), cashField("Ventas moneda nacional", salesMxnInput), cashField("Ventas dólar (USD)", salesUsdInput)]),
     h("div", { class: "grid3" }, [cashField("Tipo de cambio", exchangeRateInput), cashField(automaticLabel("Ventas dólar en MXN"), salesUsdMxnInput), cashField("IVA 0%", ivaZeroInput)]),
