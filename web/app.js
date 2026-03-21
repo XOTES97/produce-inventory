@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.21.03";
-import { supabase } from "./supabaseClient.js?v=2026.03.21.03";
+import * as cfg from "./config.js?v=2026.03.21.04";
+import { supabase } from "./supabaseClient.js?v=2026.03.21.04";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.21.03";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.21.04";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -3098,16 +3098,15 @@ function setBatchClosePresetState(value) {
   ]);
   const mermaClassification = createSelect(
     [
-      { value: "", label: "Merma general / no aplica" },
+      { value: "", label: "No aplica / Merma general" },
       { value: "exhibicion", label: "Exhibición" },
       { value: "degustacion", label: "Degustación" },
-      { value: "ambas", label: "Exhibición y degustación" },
     ],
     ""
   );
   const mermaFlagsSection = h("div", { class: "merma-flags col" }, [
     h("div", { class: "merma-flags-title", text: "Clasificación de merma (opcional)" }),
-    h("div", { class: "muted", text: "Solo selecciónala si la merma fue por exhibición o degustación. Si no aplica, deja Merma general / no aplica." }),
+    h("div", { class: "muted", text: "Solo selecciónala si la merma fue por exhibición o degustación. Si no aplica, deja No aplica / Merma general." }),
     field("Motivo", mermaClassification),
   ]);
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
@@ -3414,11 +3413,9 @@ function setBatchClosePresetState(value) {
       notes.value = String(draft.notes || "");
       const restoredMermaClassification = normalizeDraftValue(
         draft.mermaClassification,
-        draft.mermaExhibition && draft.mermaDegustation
-          ? "ambas"
-          : draft.mermaExhibition
-            ? "exhibicion"
-            : draft.mermaDegustation
+        draft.mermaExhibition
+          ? "exhibicion"
+          : draft.mermaDegustation
               ? "degustacion"
               : ""
       );
@@ -3759,8 +3756,8 @@ function setBatchClosePresetState(value) {
         let noteBase = String(notes.value || "").trim();
         if (submitMode === "merma") {
           const mermaTags = [];
-          if (mermaClassification.value === "exhibicion" || mermaClassification.value === "ambas") mermaTags.push("Exhibición");
-          if (mermaClassification.value === "degustacion" || mermaClassification.value === "ambas") mermaTags.push("Degustación");
+          if (mermaClassification.value === "exhibicion") mermaTags.push("Exhibición");
+          if (mermaClassification.value === "degustacion") mermaTags.push("Degustación");
           if (mermaTags.length) {
             noteBase = [`[MERMA: ${mermaTags.join(" | ")}]`, noteBase].filter(Boolean).join(" ");
           }
