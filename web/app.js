@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.20.13";
-import { supabase } from "./supabaseClient.js?v=2026.03.20.13";
+import * as cfg from "./config.js?v=2026.03.21.01";
+import { supabase } from "./supabaseClient.js?v=2026.03.21.01";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.20.13";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.21.01";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -127,8 +127,6 @@ const CASH_ADJUSTMENT_ORDER = [
   "gasto_caja",
   "retiro_boveda",
   "deposito_retiro_parcial",
-  "vale_comprobante",
-  "cheque",
   "transferencia_identificada",
   "otro_ajuste",
 ];
