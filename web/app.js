@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.21.02";
-import { supabase } from "./supabaseClient.js?v=2026.03.21.02";
+import * as cfg from "./config.js?v=2026.03.21.03";
+import { supabase } from "./supabaseClient.js?v=2026.03.21.03";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.21.02";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.21.03";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -3096,13 +3096,19 @@ function setBatchClosePresetState(value) {
   const batchHint = h("div", { class: "muted" }, [
     "En modo agregado: se registra como un bloque y se marca con [AGREGADO] para rastrear que fue captura consolidada.",
   ]);
-  const mermaExhibition = h("input", { type: "checkbox" });
-  const mermaDegustation = h("input", { type: "checkbox" });
+  const mermaClassification = createSelect(
+    [
+      { value: "", label: "Merma general / no aplica" },
+      { value: "exhibicion", label: "Exhibición" },
+      { value: "degustacion", label: "Degustación" },
+      { value: "ambas", label: "Exhibición y degustación" },
+    ],
+    ""
+  );
   const mermaFlagsSection = h("div", { class: "merma-flags col" }, [
-    h("div", { class: "merma-flags-title", text: "Clasificación de merma" }),
-    h("div", { class: "muted", text: "Marca si esta merma corresponde a producto de exhibición o degustación." }),
-    h("label", { class: "checkrow" }, [mermaExhibition, h("span", { text: "Exhibición" })]),
-    h("label", { class: "checkrow" }, [mermaDegustation, h("span", { text: "Degustación" })]),
+    h("div", { class: "merma-flags-title", text: "Clasificación de merma (opcional)" }),
+    h("div", { class: "muted", text: "Solo selecciónala si la merma fue por exhibición o degustación. Si no aplica, deja Merma general / no aplica." }),
+    field("Motivo", mermaClassification),
   ]);
   const notes = h("textarea", { placeholder: "Notas (opcional). Ej: cliente, contexto..." });
   const currency = h("input", { type: "text", value: DEFAULT_CURRENCY, placeholder: "Moneda (MXN)" });
@@ -3348,8 +3354,7 @@ function setBatchClosePresetState(value) {
       aggregateMode: !!aggregateMode.checked,
       aggregateCloseTime: normalizeDraftValue(aggregateCloseTime.value),
       notes: normalizeDraftValue(notes.value),
-      mermaExhibition: !!mermaExhibition.checked,
-      mermaDegustation: !!mermaDegustation.checked,
+      mermaClassification: normalizeDraftValue(mermaClassification.value),
       currency: normalizeDraftValue(currency.value, DEFAULT_CURRENCY) || DEFAULT_CURRENCY,
       fromQuality: normalizeDraftValue(fromQuality.value),
       toQuality: normalizeDraftValue(toQuality.value),
@@ -3407,8 +3412,17 @@ function setBatchClosePresetState(value) {
       aggregateMode.checked = isActorManager && !!draft.aggregateMode;
       aggregateCloseTime.value = normalizeDraftValue(draft.aggregateCloseTime, aggregateCloseTime.value);
       notes.value = String(draft.notes || "");
-      mermaExhibition.checked = !!draft.mermaExhibition;
-      mermaDegustation.checked = !!draft.mermaDegustation;
+      const restoredMermaClassification = normalizeDraftValue(
+        draft.mermaClassification,
+        draft.mermaExhibition && draft.mermaDegustation
+          ? "ambas"
+          : draft.mermaExhibition
+            ? "exhibicion"
+            : draft.mermaDegustation
+              ? "degustacion"
+              : ""
+      );
+      mermaClassification.value = restoredMermaClassification;
       currency.value = String(draft.currency || DEFAULT_CURRENCY).trim() || DEFAULT_CURRENCY;
       fromQuality.value = normalizeDraftValue(draft.fromQuality, "");
       toQuality.value = normalizeDraftValue(draft.toQuality, "");
@@ -3674,8 +3688,7 @@ function setBatchClosePresetState(value) {
   function resetCaptureFormAfterSave() {
     clearCaptureDraft();
     notes.value = "";
-    mermaExhibition.checked = false;
-    mermaDegustation.checked = false;
+    mermaClassification.value = "";
     if (proofs) proofs.value = "";
     clearEmployeeCaptureProofs({ clearStored: true });
     renderEmployeeProofs();
@@ -3746,8 +3759,8 @@ function setBatchClosePresetState(value) {
         let noteBase = String(notes.value || "").trim();
         if (submitMode === "merma") {
           const mermaTags = [];
-          if (mermaExhibition.checked) mermaTags.push("Exhibición");
-          if (mermaDegustation.checked) mermaTags.push("Degustación");
+          if (mermaClassification.value === "exhibicion" || mermaClassification.value === "ambas") mermaTags.push("Exhibición");
+          if (mermaClassification.value === "degustacion" || mermaClassification.value === "ambas") mermaTags.push("Degustación");
           if (mermaTags.length) {
             noteBase = [`[MERMA: ${mermaTags.join(" | ")}]`, noteBase].filter(Boolean).join(" ");
           }
