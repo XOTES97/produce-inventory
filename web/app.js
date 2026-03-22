@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.21.04";
-import { supabase } from "./supabaseClient.js?v=2026.03.21.04";
+import * as cfg from "./config.js?v=2026.03.22.01";
+import { supabase } from "./supabaseClient.js?v=2026.03.22.01";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.21.04";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.22.01";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -38,6 +38,7 @@ const SUBMIT_PARSE_YIELD_EVERY = 2;
 const RESUME_REFRESH_MS = 15000;
 const RENDER_DEBOUNCE_MS = 120;
 const MASTER_DATA_TTL_MS = 1000 * 60 * 5;
+const EMPLOYEE_SHARED_DATA_TTL_MS = 1000 * 20;
 const MAX_PROOF_DIMENSION = 1280;
 const PROOF_COMPRESS_QUALITY = 0.82;
 const PROOF_COMPRESS_BYTES_THRESHOLD = 1_200_000;
@@ -195,6 +196,7 @@ let isProofPickerOpen = false;
 let proofPickerOpenedAt = 0;
 let proofPickerResetTimer = null;
 let masterDataLoadedAt = 0;
+let actorDataLoadedAt = 0;
 let renderTimer = null;
 let lastRenderCompleteAt = 0;
 
@@ -408,6 +410,7 @@ function defaultActorState() {
 function resetActorState() {
   state.actor = defaultActorState();
   state.actorLoaded = true;
+  actorDataLoadedAt = 0;
 }
 
 function isSupabaseLockAbortError(error) {
@@ -419,6 +422,10 @@ function isSupabaseLockAbortError(error) {
 async function ensureActorContextLoaded() {
   if (!state.session || state.actorLoaded) return;
   await loadActorContext();
+}
+
+function currentSharedDataTtlMs() {
+  return state.actor?.role === "employee" ? EMPLOYEE_SHARED_DATA_TTL_MS : MASTER_DATA_TTL_MS;
 }
 
 function yieldToUI() {
@@ -1817,6 +1824,7 @@ async function loadActorContext() {
     }
   } finally {
     state.actorLoaded = true;
+    actorDataLoadedAt = Date.now();
   }
 }
 
@@ -9194,6 +9202,17 @@ async function render() {
     return;
   }
 
+  const sharedDataTtlMs = currentSharedDataTtlMs();
+  const now = Date.now();
+  if (state.actor?.role === "employee" && actorDataLoadedAt && now - actorDataLoadedAt >= sharedDataTtlMs) {
+    state.actorLoaded = false;
+    await ensureActorContextLoaded();
+    r = route();
+  }
+  if (state.actor?.role === "employee" && masterDataLoadedAt && now - masterDataLoadedAt >= sharedDataTtlMs) {
+    state.masterLoaded = false;
+  }
+
   if (!state.masterLoaded) {
     try {
       await loadMasterData();
@@ -9302,7 +9321,11 @@ async function refreshAfterResume() {
   const now = Date.now();
   if (now - lastResumeRefreshAt < RESUME_REFRESH_MS) return;
   lastResumeRefreshAt = now;
-  if (!state.masterLoaded || now - masterDataLoadedAt >= MASTER_DATA_TTL_MS) {
+  const sharedDataTtlMs = currentSharedDataTtlMs();
+  if (!state.actorLoaded || now - actorDataLoadedAt >= sharedDataTtlMs) {
+    state.actorLoaded = false;
+  }
+  if (!state.masterLoaded || now - masterDataLoadedAt >= sharedDataTtlMs) {
     state.masterLoaded = false;
   }
   await safeRender();
