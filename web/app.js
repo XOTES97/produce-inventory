@@ -1,8 +1,8 @@
-import * as cfg from "./config.js?v=2026.03.22.01";
-import { supabase } from "./supabaseClient.js?v=2026.03.22.01";
+import * as cfg from "./config.js?v=2026.03.22.02";
+import { supabase } from "./supabaseClient.js?v=2026.03.22.02";
 
 const DEFAULT_CURRENCY = cfg.DEFAULT_CURRENCY || "MXN";
-const APP_VERSION = cfg.APP_VERSION || "2026.03.22.01";
+const APP_VERSION = cfg.APP_VERSION || "2026.03.22.02";
 const APP_NAME = cfg.APP_NAME || "FST INV";
 const APP_LOGO_URL = cfg.APP_LOGO_URL || "./icons/fst-logo.png";
 
@@ -9258,6 +9258,24 @@ function isLoginInteractionSensitive() {
   return !state.session && route() === "login";
 }
 
+function isTextEntryElement(el) {
+  if (!el) return false;
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLSelectElement) return true;
+  if (el instanceof HTMLInputElement) {
+    const type = String(el.type || "text").toLowerCase();
+    return !["checkbox", "radio", "button", "submit", "reset", "file", "image", "range", "color"].includes(type);
+  }
+  if (el instanceof HTMLElement) {
+    return el.isContentEditable || Boolean(el.closest("[contenteditable='true']"));
+  }
+  return false;
+}
+
+function isForegroundRefreshSensitive() {
+  return isLoginInteractionSensitive() || isTextEntryElement(document.activeElement);
+}
+
 function isRenderThrottled() {
   return isAppHidden || !isAppInForeground() || isProofPickerOpen || state.captureSubmitting;
 }
@@ -9397,10 +9415,13 @@ async function boot() {
     routeScrollResetPending = true;
     scheduleSafeRender();
   });
-  window.addEventListener("online", () => scheduleSafeRender());
+  window.addEventListener("online", () => {
+    if (isForegroundRefreshSensitive()) return;
+    scheduleSafeRender();
+  });
   window.addEventListener("focus", () => {
     recoverMobileUiState();
-    if (isLoginInteractionSensitive()) {
+    if (isForegroundRefreshSensitive()) {
       isAppHidden = false;
       return;
     }
@@ -9424,7 +9445,7 @@ async function boot() {
   window.addEventListener("pageshow", () => {
     recoverMobileUiState();
     isAppHidden = false;
-    if (isLoginInteractionSensitive()) return;
+    if (isForegroundRefreshSensitive()) return;
     scheduleResumeRefresh();
     scheduleSafeRender();
   });
@@ -9437,7 +9458,7 @@ async function boot() {
       clearRenderTimer();
       return;
     }
-    if (isLoginInteractionSensitive()) {
+    if (isForegroundRefreshSensitive()) {
       isAppHidden = false;
       return;
     }
